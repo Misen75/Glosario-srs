@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Glosario de Diseño de Software y Arquitectura</title>
+  <style>
+    @page {
+      size: A4 landscape;
+      margin: 12mm;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: #1f2937;
+      background-color: #f9fafb;
+      margin: 0;
+      padding: 20px;
+      font-size: 11px;
+      line-height: 1.45;
+    }
+    .container {
+      max-width: 100%;
+      margin: 0 auto;
+      background: #ffffff;
+      padding: 24px;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    header {
+      margin-bottom: 16px;
+      border-bottom: 2px solid #2563eb;
+      padding-bottom: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    h1 {
+      margin: 0;
+      font-size: 20px;
+      color: #111827;
+    }
+    p.subtitle {
+      margin: 4px 0 0 0;
+      color: #4b5563;
+      font-size: 12px;
+    }
+    .print-btn {
+      background-color: #2563eb;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .print-btn:hover {
+      background-color: #1d4ed8;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 8px;
+    }
+    th, td {
+      border: 1px solid #e5e7eb;
+      padding: 8px 10px;
+      vertical-align: top;
+      text-align: left;
+    }
+    th {
+      background-color: #f1f5f9;
+      color: #0f172a;
+      font-weight: 700;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    tr:nth-child(even) {
+      background-color: #f8fafc;
+    }
+    tr {
+      page-break-inside: avoid;
+    }
+    .cat {
+      font-weight: 600;
+      color: #1d4ed8;
+      width: 14%;
+    }
+    .term {
+      font-weight: 700;
+      color: #111827;
+      width: 14%;
+    }
+    .def {
+      width: 44%;
+      color: #374151;
+    }
+    .analog {
+      width: 28%;
+      color: #1e293b;
+      background-color: #f0fdf4;
+      font-style: normal;
+    }
+    tr:nth-child(even) .analog {
+      background-color: #eafbee;
+    }
+    @media print {
+      body {
+        background: #ffffff;
+        padding: 0;
+      }
+      .container {
+        box-shadow: none;
+        padding: 0;
+      }
+      .print-btn {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <h1>Compendio Técnico de Diseño de Software y Arquitectura</h1>
+        <p class="subtitle">Principios, Patrones GoF, Arquitectura, DDD, Rendimiento y Resiliencia</p>
+      </div>
+      <button class="print-btn" onclick="window.print()">Imprimir / Guardar como PDF</button>
+    </header>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Categoría</th>
+          <th>Término</th>
+          <th>Definición Técnica Detallada</th>
+          <th>Analogía de la Vida Cotidiana</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="cat">Principios Fundamentales</td>
+          <td class="term">Cohesión</td>
+          <td class="def">Grado en que los métodos, atributos y responsabilidades de un módulo trabajan juntos para cumplir un único objetivo bien delimitado. Una alta cohesión evita clases genéricas ("cajón de sastre") que hacen demasiadas cosas distintas, garantizando que el código sea predecible, fácil de entender y simple de testear.</td>
+          <td class="analog">Una caja de herramientas de relojero: cada pinza y destornillador sirve exclusivamente para reparar relojes. (Baja cohesión sería una navaja suiza que intenta ser secador de pelo).</td>
+        </tr>
+        <tr>
+          <td class="cat">Principios Fundamentales</td>
+          <td class="term">Acoplamiento</td>
+          <td class="def">Grado de dependencia y conocimiento directo que tiene un módulo sobre el código interno de otro. Un alto acoplamiento provoca un "efecto dominó" donde modificar una clase rompe a otras tres. El diseño busca bajo acoplamiento: que los módulos interactúen a través de interfaces sin importar cómo están implementados por dentro.</td>
+          <td class="analog">Dispositivos conectados por Bluetooth o USB-C (bajo acoplamiento) frente a cables soldados directamente a la placa madre (alto acoplamiento).</td>
+        </tr>
+        <tr>
+          <td class="cat">Principios Fundamentales</td>
+          <td class="term">Abstracción</td>
+          <td class="def">Mecanismo que oculta los detalles operativos y la complejidad interna de un componente, exponiendo únicamente las operaciones esenciales al exterior. Permite al desarrollador usar una funcionalidad compleja mediante una interfaz limpia sin tener que preocuparse por cómo funciona el mecanismo por debajo.</td>
+          <td class="analog">El volante y los pedales de un auto: aceleras y frenas sin necesidad de entender la química de combustión ni la inyección electrónica.</td>
+        </tr>
+        <tr>
+          <td class="cat">Principios Fundamentales</td>
+          <td class="term">Encapsulamiento</td>
+          <td class="def">Empaquetamiento de datos (variables de estado) y métodos que operan sobre ellos dentro de una misma clase, restringiendo el acceso directo desde fuera mediante modificadores de visibilidad (private). Protege la integridad del objeto, obligando a que cualquier cambio pase por métodos controlados.</td>
+          <td class="analog">Una cápsula médica o termómetro digital: sus componentes químicos o sensores están sellados; interactúas solo con la pantalla externa.</td>
+        </tr>
+        <tr>
+          <td class="cat">Principios Fundamentales</td>
+          <td class="term">Separation of Concerns (SoC)</td>
+          <td class="def">Principio que establece que un sistema debe dividirse en secciones independientes donde cada una gestione un aspecto técnico o de negocio aislado (ej. interfaz visual, lógica de negocio y persistencia en disco). Evita que un cambio en la base de datos o en la pantalla obligue a reescribir las reglas del sistema.</td>
+          <td class="analog">La división de un restaurante: la cocina prepara comida, los meseros atienden clientes y la caja cobra; ninguno interfiere en el área del otro.</td>
+        </tr>
+        <tr>
+          <td class="cat">SOLID</td>
+          <td class="term">Single Responsibility (S)</td>
+          <td class="def">Principio que exige que cada clase o módulo tenga una única responsabilidad bien definida y, por tanto, una sola razón para cambiar en el ciclo de vida del software. Si una clase calcula impuestos, genera un PDF y lo envía por correo, viola este principio al acumular tres razones distintas para modificarse.</td>
+          <td class="analog">El chef del restaurante: solo modifica sus recetas si cambia el menú de cocina, no si cambian las leyes de facturación contable.</td>
+        </tr>
+        <tr>
+          <td class="cat">SOLID</td>
+          <td class="term">Open/Closed (O)</td>
+          <td class="def">Principio que dicta que una clase debe estar abierta a incorporar nuevos comportamientos (extensión), pero cerrada a la alteración de su código fuente ya probado (modificación). Se logra mediante polimorfismo e interfaces: se agregan nuevas clases que implementan un contrato en lugar de llenar la clase original de sentencias if/else.</td>
+          <td class="analog">Una funda protectora para smartphone: le añades resistencia a caídas o soporte para tarjetas sin abrir ni modificar el chasis del teléfono.</td>
+        </tr>
+        <tr>
+          <td class="cat">SOLID</td>
+          <td class="term">Liskov Substitution (L)</td>
+          <td class="def">Principio que establece que cualquier subclase debe poder sustituir a su clase base sin romper el programa ni alterar su comportamiento esperado. La subclase debe respetar los contratos del padre: no puede cambiar el significado de los métodos, anularlos lanzando errores inesperados ni exigir precondiciones más estrictas.</td>
+          <td class="analog">Un enchufe estándar: cualquier electrodoméstico compatible debe encender de inmediato sin fundir la instalación eléctrica del hogar.</td>
+        </tr>
+        <tr>
+          <td class="cat">SOLID</td>
+          <td class="term">Interface Segregation (I)</td>
+          <td class="def">Principio que sostiene que es preferible tener muchas interfaces específicas y pequeñas antes que una interfaz gigantesca y genérica. Ninguna clase debe verse forzada a implementar métodos que no necesita; si una interfaz obliga a dejar métodos vacíos o lanzar errores de "no implementado", debe fragmentarse.</td>
+          <td class="analog">Un control remoto específico de volumen: en lugar de darte un panel de avión con 200 botones cuando solo quieres subir el sonido.</td>
+        </tr>
+        <tr>
+          <td class="cat">SOLID</td>
+          <td class="term">Dependency Inversion (D)</td>
+          <td class="def">Principio donde los módulos de alto nivel (lógica de negocio central) no deben importar ni instanciar directamente clases de bajo nivel (bases de datos o APIs externas); ambos deben depender de abstracciones (interfaces). Esto evita que el núcleo de la aplicación quede atado a librerías o tecnologías concretas.</td>
+          <td class="analog">La toma de corriente de pared: tu lámpara se enchufa a una toma universal; no viene soldada a los cables directos de la central hidroeléctrica.</td>
+        </tr>
+        <tr>
+          <td class="cat">Patrones GoF (Creacionales)</td>
+          <td class="term">Factory Method / Abstract Factory</td>
+          <td class="def">Patrón que delega la instanciación de objetos a métodos o clases especializadas en lugar de crearlos directamente con new. Permite al código cliente trabajar con interfaces generales y desacoplarse de las clases concretas, facilitando la creación de familias enteras de objetos en tiempo de ejecución.</td>
+          <td class="analog">Pedir comida a domicilio por app: pides un "menú ejecutivo" y la cocina decide los ingredientes y montaje sin que tú armes el plato.</td>
+        </tr>
+        <tr>
+          <td class="cat">Patrones GoF (Creacionales)</td>
+          <td class="term">Builder</td>
+          <td class="def">Patrón que descompone la creación de un objeto complejo en una serie de pasos configurables, separando la construcción de la representación final. Elimina constructores con decenas de parámetros difíciles de leer y permite armar diferentes variantes de un objeto usando una secuencia encadenada y limpia.</td>
+          <td class="analog">Armar un sándwich en Subway: eliges el pan, luego la proteína, después los vegetales y al final los aderezos en una secuencia guiada.</td>
+        </tr>
+        <tr>
+          <td class="cat">Patrones GoF (Creacionales)</td>
+          <td class="term">Singleton</td>
+          <td class="def">Patrón que restringe la instanciación de una clase a una única copia en toda la memoria del programa y ofrece un punto de acceso global a ella. Se usa para coordinar recursos compartidos (como un pool de conexiones a bases de datos), aunque si se abusa puede actuar como una variable global oculta difícil de testear.</td>
+          <td class="analog">El presidente de un país o el sol: solo hay uno en funciones a la vez ocupando ese rol central en todo el territorio.</td>
+        </tr>
+        <tr>
+          <td class="cat">Patrones GoF (Estructurales)</td>
+          <td class="term">Adapter</td>
+          <td class="def">Patrón que funciona como envoltorio (wrapper) para convertir la interfaz de una clase existente en otra que el cliente espera consumir. Permite que clases con interfaces incompatibles colaboren entre sí sin tener que modificar el código fuente original de ninguna de las dos (ideal para integrar librerías externas).</td>
+          <td class="analog">Un adaptador de viaje eléctrico: permite conectar una clavija redonda europea en un tomacorriente plano americano.</td>
+        </tr>
+        <tr>
+          <td class="cat">Patrones GoF (Estructurales)</td>
+          <td class="term">Decorator</td>
+          <td class="def">Patrón que permite añadir funcionalidades y comportamientos adicionales a un objeto específico en tiempo de ejecución envolviéndolo en otra clase que implementa su misma interfaz. Es una alternativa dinámica y flexible a la herencia que evita crear docenas de subclases para cada combinación de características.</td>
+          <td class="analog">Capas de ropa en invierno: llevas una camiseta y le agregas un suéter y luego un impermeable según cambie el clima.</td>
+        </tr>
+        <tr>
+          <td class="cat">Patrones GoF (Estructurales)</td>
+          <td class="term">Facade</td>
+          <td class="def">Patrón que provee una interfaz simplificada, limpia y de alto nivel para interactuar con un subsistema complejo compuesto por múltiples clases y dependencias. El cliente solo llama a unos pocos métodos sencillos del Facade sin necesidad de conocer la orquestación interna de las capas inferiores.</td>
+          <td class="analog">El botón de encendido de un televisor: con un clic enciende pantalla, procesador de audio, decodificador y sintonizador de antena.</td>
+        </tr>
+        <tr>
+          <td class="cat">Patrones GoF (Estructurales)</td>
+          <td class="term">Proxy</td>
+          <td class="def">Patrón que actúa como un objeto sustituto o intermediario que controla el acceso al objeto real. Se utiliza para interceptar llamadas y añadir tareas auxiliares de forma transparente: verificar permisos de acceso, almacenar resultados en caché o posponer la instanciación de objetos pesados hasta que realmente se usen (lazy loading).</td>
+          <td class="analog">El guardia de seguridad en un edificio: verifica tu credencial antes de permitirte pasar a ver directamente al director general.</td>
+        </tr>
+        <tr>
+          <td class="cat">Patrones GoF (Comportamiento)</td>
+          <td class="term">Strategy</td>
+          <td class="def">Patrón que encapsula diferentes algoritmos o formas de hacer una tarea en clases independientes e intercambiables bajo una misma interfaz. Permite que el contexto elija o cambie el algoritmo a ejecutar en tiempo de ejecución (ej. métodos de pago o cálculo de rutas) sin ensuciar el código con bloques de switch o if/else.</td>
+          <td class="analog">Ruta en Google Maps: puedes cambiar la estrategia de viaje entre ir en automóvil, transporte público o caminando según convenga.</td>
+        </tr>
+        <tr>
+          <td class="cat">Patrones GoF (Comportamiento)</td>
+          <td class="term">Observer</td>
+          <td class="def">Patrón que define una relación uno-a-muchos: cuando el objeto principal (sujeto) cambia su estado interno, notifica automáticamente a todos los objetos dependientes suscritos (observadores) invocando un método común. Permite desacoplar el emisor de los receptores en sistemas guiados por cambios o eventos.</td>
+          <td class="analog">La campanita de YouTube o un periódico: los suscriptores reciben una notificación cada vez que se publica una nueva edición.</td>
+        </tr>
+        <tr>
+          <td class="cat">Patrones GoF (Comportamiento)</td>
+          <td class="term">Command</td>
+          <td class="def">Patrón que encapsula una solicitud completa (el método a invocar, el objeto receptor y sus argumentos) dentro de un objeto autónomo. Al convertir peticiones en objetos, el sistema puede encolarlas, retrasar su ejecución, pasarlas como parámetros a otros métodos o implementar mecanismos de deshacer/rehacer (Undo/Redo).</td>
+          <td class="analog">La comanda de papel de un mesero: la orden queda escrita en un ticket que la cocina puede encolar, reordenar por prioridad o anular.</td>
+        </tr>
+        <tr>
+          <td class="cat">Interfaces y Contratos</td>
+          <td class="term">API (Application Programming Interface)</td>
+          <td class="def">Conjunto formal de especificaciones, contratos y puntos de entrada definidos que permiten a dos programas intercambiar datos y servicios sin conocer el código interno del otro. Establece qué peticiones están permitidas, qué parámetros requieren y en qué formato se devuelven las respuestas.</td>
+          <td class="analog">El menú y el mesero en un restaurante: no entras a la cocina a preparar el plato; pides una opción de la carta y recibes la comida lista.</td>
+        </tr>
+        <tr>
+          <td class="cat">Interfaces y Contratos</td>
+          <td class="term">SDK (Software Development Kit)</td>
+          <td class="def">Paquete integral que agrupa librerías de código precompiladas, documentación técnica, herramientas de depuración y ejemplos para un lenguaje de programación específico. Facilita el consumo de una API evitando que el desarrollador tenga que programar peticiones HTTP o parseos de red manualmente.</td>
+          <td class="analog">Un mueble de IKEA con herramientas: la API serían los tornillos sueltos; el SDK es la caja completa con piezas premontadas, la llave y el manual.</td>
+        </tr>
+        <tr>
+          <td class="cat">Interfaces y Contratos</td>
+          <td class="term">Contrato de API (API Schema)</td>
+          <td class="def">Documento formal y estructurado (usando estándares como OpenAPI/Swagger o Protobuf) que define con precisión quirúrgica los endpoints, tipos de datos, parámetros obligatorios y posibles errores de un servicio. Ambas partes (cliente y servidor) lo usan para validar que los mensajes sean correctos antes de procesarlos.</td>
+          <td class="analog">Un formulario oficial de aduana: ambas partes saben exactamente qué casillas deben llenarse y qué documentos se exigen para pasar.</td>
+        </tr>
+        <tr>
+          <td class="cat">Arquitectura y DDD</td>
+          <td class="term">IoC / Inyección de Dependencias</td>
+          <td class="def">Principio de diseño donde una clase no se encarga de crear ni buscar las dependencias que necesita (conexiones de base de datos, clientes de red), sino que las recibe listas desde el exterior (generalmente por su constructor). Un contenedor central orquesta la creación, permitiendo reemplazar componentes reales por simulados (mocks) en pruebas.</td>
+          <td class="analog">Una oficina de coworking: llegas y ya tienes escritorio, luz e internet listos, en vez de tener que cablear y contratar los servicios tú mismo.</td>
+        </tr>
+        <tr>
+          <td class="cat">Arquitectura y DDD</td>
+          <td class="term">Domain-Driven Design (DDD)</td>
+          <td class="def">Filosofía de diseño que propone construir el software modelando directamente las reglas y conceptos centrales del negocio en lugar de estructurarlo a partir de tablas de bases de datos o frameworks. Desarrolladores y especialistas del negocio colaboran para definir un modelo de dominio que resuelva problemas de esa industria.</td>
+          <td class="analog">Diseñar un hospital modelando quirófanos y pacientes: siguiendo protocolos médicos en vez de centrarse únicamente en tablas de base de datos.</td>
+        </tr>
+        <tr>
+          <td class="cat">Arquitectura y DDD</td>
+          <td class="term">Bounded Context</td>
+          <td class="def">Límite explícito dentro de una arquitectura donde un modelo de dominio particular es aplicable y sus términos tienen un significado estricto. Permite que un mismo concepto (como "Usuario") signifique cosas distintas en el módulo de Facturación que en el módulo de Soporte, evitando modelos monolíticos gigantes que se contradicen.</td>
+          <td class="analog">La palabra "Vuelo": para el piloto significa ruta, clima y combustible; para el pasajero significa número de asiento y hora de embarque.</td>
+        </tr>
+        <tr>
+          <td class="cat">Arquitectura y DDD</td>
+          <td class="term">Lenguaje Ubicuo</td>
+          <td class="def">Vocabulario estandarizado, común y sin ambigüedades acordado entre programadores y expertos del negocio. Se usa de forma estricta tanto en las conversaciones cotidianas como dentro del código fuente (en nombres de clases, métodos, variables y eventos), asegurando que todos hablen del mismo concepto.</td>
+          <td class="analog">La jerga náutica en un barco: babor y estribor significan exactamente lo mismo para el capitán, los marineros y los ingenieros navales.</td>
+        </tr>
+        <tr>
+          <td class="cat">Arquitectura y DDD</td>
+          <td class="term">Entity vs. Value Object</td>
+          <td class="def">Una Entity es un objeto del dominio que se define por tener una identidad única y persistente en el tiempo (su ID no cambia aunque cambien sus datos). Un Value Object no tiene identificador; se define únicamente por el valor de sus propiedades, es inmutable y dos instancias con los mismos valores se consideran idénticas.</td>
+          <td class="analog">Pasaporte vs. Billete de $10: tu pasaporte es único por tu número de documento (Entity); si cambias un billete de $10 por otro igual, no cambia nada (Value Object).</td>
+        </tr>
+        <tr>
+          <td class="cat">Arquitectura y DDD</td>
+          <td class="term">Aggregate / Aggregate Root</td>
+          <td class="def">Conjunto cohesionado de entidades y objetos de valor que se tratan como una unidad atómica para aplicar reglas de negocio y guardar cambios de forma consistente. El Aggregate Root es la única entidad pública a través de la cual el mundo exterior puede interactuar con los elementos internos de ese grupo.</td>
+          <td class="analog">Un pedido de compra con sus ítems: no agregas ítems flotando en el vacío; entras al pedido central y este valida el total y el stock.</td>
+        </tr>
+        <tr>
+          <td class="cat">Arquitectura y DDD</td>
+          <td class="term">Arquitectura Hexagonal</td>
+          <td class="def">Patrón arquitectónico que aísla por completo la lógica pura del negocio colocándola en el núcleo y rodeándola de interfaces llamadas puertos. Las tecnologías externas (bases de datos, APIs web, colas de mensajería) se conectan mediante adaptadores, lo que permite cambiar cualquier tecnología sin tocar el código de negocio.</td>
+          <td class="analog">Una consola de videojuegos: el motor del juego corre intacto sin importar si conectas un control oficial, una palanca arcade o audífonos.</td>
+        </tr>
+        <tr>
+          <td class="cat">Arquitectura y DDD</td>
+          <td class="term">C4 Model</td>
+          <td class="def">Marco visual para documentar la arquitectura de un sistema en cuatro niveles progresivos de zoom: Contexto (cómo encaja el sistema con usuarios y otros sistemas), Contenedores (aplicaciones ejecutables y bases de datos), Componentes (módulos internos de cada contenedor) y Código (diagramas de clases individuales).</td>
+          <td class="analog">Google Maps: vista de continente (Contexto), vista de ciudad (Contenedores), vista de calles (Componentes) y vista de interiores (Código).</td>
+        </tr>
+        <tr>
+          <td class="cat">Arquitectura y DDD</td>
+          <td class="term">Capacidad de Negocio</td>
+          <td class="def">Concepto de arquitectura empresarial que define qué hace una organización para generar valor o cumplir sus funciones (ej. "facturación", "gestión de inventario"), con total independencia de las tecnologías, herramientas o lenguajes que se usen para programarlo en la práctica.</td>
+          <td class="analog">"Procesar pagos": la capacidad existe y es idéntica si el negocio cobra con monedas de oro, terminales de tarjeta o criptomonedas.</td>
+        </tr>
+        <tr>
+          <td class="cat">Estilos Arquitectónicos</td>
+          <td class="term">Arquitectura en Capas</td>
+          <td class="def">Organización del software en niveles horizontales superpuestos donde cada capa tiene una responsabilidad concreta (Presentación, Negocio, Datos) y solo puede comunicarse con la capa inmediatamente inferior. Facilita ordenar proyectos tradicionales, pero puede generar acoplamientos rígidos en cascada.</td>
+          <td class="analog">Los pisos de un rascacielos: la recepción atiende al público en la planta baja, la administración procesa trámites y el archivo está blindado en el sótano.</td>
+        </tr>
+        <tr>
+          <td class="cat">Estilos Arquitectónicos</td>
+          <td class="term">Monolito vs. Microservicios</td>
+          <td class="def">Un monolito empaqueta toda la aplicación, lógica y persistencia en una sola base de código y unidad de despliegue. Los microservicios dividen el sistema en servicios independientes y autónomos con sus propias bases de datos, que se despliegan por separado y se comunican a través de la red (HTTP/gRPC/mensajería).</td>
+          <td class="analog">Tienda departamental vs. Centro comercial: en la departamental la caja y la luz son compartidas; en el centro comercial cada local es independiente.</td>
+        </tr>
+        <tr>
+          <td class="cat">Estilos Arquitectónicos</td>
+          <td class="term">Arquitectura Orientada a Eventos (EDA)</td>
+          <td class="def">Paradigma donde los componentes se comunican publicando y consumiendo notificaciones asíncronas de hechos que ya sucedieron en el sistema (ej. "orden_pagada"). El emisor emite el evento a un bus o broker (Kafka, RabbitMQ) sin esperar respuesta ni saber quién lo procesará, logrando desacoplamiento total en tiempo y ejecución.</td>
+          <td class="analog">La alarma de incendios del cuartel: suena la sirena anunciando fuego; cada bombero corre a su puesto sin que el capitán deba llamarlos uno por uno.</td>
+        </tr>
+        <tr>
+          <td class="cat">Rendimiento e Infraestructura</td>
+          <td class="term">Capacidad (Capacity Planning)</td>
+          <td class="def">Proceso técnico de calcular y proyectar los recursos de hardware, cómputo, red y almacenamiento necesarios para que una arquitectura soporte el volumen de tráfico actual y futuro sin degradar el rendimiento, sufrir caídas ni incurrir en sobrecostos de infraestructura innecesarios.</td>
+          <td class="analog">El aforo máximo de un estadio: cuántos espectadores pueden ingresar antes de que falten asientos, colapsen las salidas o fallen los baños.</td>
+        </tr>
+        <tr>
+          <td class="cat">Rendimiento e Infraestructura</td>
+          <td class="term">Escalabilidad (Vertical vs. Horizontal)</td>
+          <td class="def">Habilidad de un sistema para soportar incrementos de carga de trabajo. Escalar verticalmente (Scale-Up) significa darle más potencia al servidor actual (más CPU o RAM). Escalar horizontalmente (Scale-Out) significa agregar más servidores paralelos que se repartan las peticiones, permitiendo crecer de forma casi ilimitada.</td>
+          <td class="analog">Transportar más pasajeros: Escalabilidad vertical es cambiar un auto por un autobús de dos pisos; escalabilidad horizontal es pedir 5 taxis idénticos.</td>
+        </tr>
+        <tr>
+          <td class="cat">Rendimiento e Infraestructura</td>
+          <td class="term">Throughput vs. Latencia</td>
+          <td class="def">Métricas operativas de rendimiento. La latencia es el tiempo que transcurre desde que un cliente hace una petición hasta que recibe la respuesta (se mide en milisegundos). El throughput (rendimiento) es el volumen de peticiones o transacciones totales que el sistema es capaz de procesar por segundo (RPS o TPS).</td>
+          <td class="analog">Una manguera de bomberos: La latencia es el tiempo que tarda la primera gota en salir por la boquilla; el throughput son los litros de agua por segundo que expulsa.</td>
+        </tr>
+        <tr>
+          <td class="cat">Rendimiento e Infraestructura</td>
+          <td class="term">Caché (Caching)</td>
+          <td class="def">Mecanismo que guarda una copia de datos de consulta frecuente en una capa de memoria ultrarrápida (RAM, ej. Redis o Memcached) para evitar operaciones lentas, como consultas complejas a la base de datos o cálculos pesados. Si el dato está en caché, se responde en microsegundos.</td>
+          <td class="analog">El bolsillo de tu pantalón: guardas ahí el celular y las llaves para sacarlos al instante, en lugar de caminar hasta el armario cada vez que los necesitas.</td>
+        </tr>
+        <tr>
+          <td class="cat">Rendimiento e Infraestructura</td>
+          <td class="term">Balanceador de Carga</td>
+          <td class="def">Dispositivo de red o servicio de software ubicado entre los clientes y los servidores backend que intercepta las peticiones entrantes y las distribuye equitativamente entre múltiples instancias activas. Si un servidor se cae, deja de enviarle tráfico para evitar que los usuarios sufran errores.</td>
+          <td class="analog">El anfitrión en la entrada del banco: revisa qué ventanilla está libre y dirige al siguiente cliente en la fila para evitar cuellos de botella.</td>
+        </tr>
+        <tr>
+          <td class="cat">Resiliencia y Disponibilidad</td>
+          <td class="term">Circuit Breaker</td>
+          <td class="def">Patrón de estabilidad para sistemas distribuidos. Si un servicio externo empieza a fallar reiteradamente, el circuito "se abre" e interrumpe de inmediato las llamadas siguientes, devolviendo un error controlado al instante. Esto evita que los hilos de ejecución se bloqueen esperando timeouts y da tiempo al servicio afectado de recuperarse.</td>
+          <td class="analog">La llave térmica o fusible de una casa: si un electrodoméstico entra en cortocircuito, la llave salta para evitar que se incendie toda la instalación.</td>
+        </tr>
+        <tr>
+          <td class="cat">Resiliencia y Disponibilidad</td>
+          <td class="term">Tolerancia a Fallos / Failover</td>
+          <td class="def">Propiedad que permite a un sistema seguir funcionando con normalidad ante la falla imprevista de uno o más de sus componentes. El failover es el mecanismo automatizado que detecta que un servidor principal ha muerto y redirige todo el tráfico hacia un nodo de respaldo secundario en milisegundos sin intervención humana.</td>
+          <td class="analog">El motor de respaldo de un avión comercial: si uno de los motores falla en pleno vuelo, el avión continúa volando de manera segura con el secundario.</td>
+        </tr>
+        <tr>
+          <td class="cat">Calidad y Operatividad</td>
+          <td class="term">Idempotencia</td>
+          <td class="def">Propiedad de una operación que garantiza que ejecutarla una vez o ejecutarla múltiples veces consecutivas (con los mismos parámetros) produce exactamente el mismo estado final en el sistema. Es crucial en APIs REST y pasarelas de pago para que un reintento por pérdida de conexión no cobre dos veces al usuario.</td>
+          <td class="analog">El botón del ascensor: no importa si lo presionas 1 o 10 veces consecutivas, el ascensor se detendrá en tu piso exactamente una vez.</td>
+        </tr>
+        <tr>
+          <td class="cat">Calidad y Operatividad</td>
+          <td class="term">Inmutabilidad</td>
+          <td class="def">Propiedad por la cual una variable, objeto o estructura de datos no puede ser alterada una vez creada en la memoria del programa. Cualquier modificación produce una nueva instancia con el cambio, eliminando efectos colaterales inesperados y evitando condiciones de carrera en entornos multihilo.</td>
+          <td class="analog">Un acta notarial o un grabado en piedra: para corregir un dato no borras la piedra original, emites un nuevo documento fechado.</td>
+        </tr>
+        <tr>
+          <td class="cat">Calidad y Operatividad</td>
+          <td class="term">Deuda Técnica</td>
+          <td class="def">Metáfora que ilustra el costo futuro acumulado en tiempo y mantenimiento al optar por soluciones rápidas, desprolijas o "parches" en el presente en vez de un diseño arquitectónico sólido. Al igual que una deuda financiera, acumula intereses: cada nueva funcionalidad se vuelve más lenta y propensa a fallos.</td>
+          <td class="analog">Arreglar una fuga de agua con cinta aislante: detiene la gota hoy, pero si no cambias el tubo a tiempo terminará inundando toda la casa.</td>
+        </tr>
+        <tr>
+          <td class="cat">Calidad y Operatividad</td>
+          <td class="term">Refactorización</td>
+          <td class="def">Proceso sistemático y controlado de reestructurar y mejorar la calidad interna del código fuente (legibilidad, modularidad, rendimiento) sin cambiar en absoluto su comportamiento externo visible ni romper los casos de prueba existentes.</td>
+          <td class="analog">Organizar el armario de ropa: doblas y ordenas por colores sin botar ni comprar prendas nuevas; la ropa es la misma, pero ahora encuentras todo más rápido.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</body>
+</html>

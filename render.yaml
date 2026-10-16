@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: glosario-srs
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn src.interfaces.api_server:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: DATABASE_URL
+        sync: false
+        # Pega aquí la URI de conexión de Supabase PostgreSQL (ej. postgresql://postgres:pass@db.xxxx.supabase.co:5432/postgres)
+      - key: GEMINI_API_KEY
+        sync: false
+        # Tu API Key de Google AI Studio
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+        # Token provisto por @BotFather
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+        # Tu Chat ID personal de Telegram
+      - key: CRON_SECRET
+        generateValue: true
+        # Secreto autogenerado para proteger el endpoint POST /api/cron/trigger-srs
+      - key: TELEGRAM_WEBHOOK_SECRET
+        generateValue: true
+        # Token secreto para validar que los webhooks provengan de Telegram
+      - key: WEB_ACCESS_PIN
+        sync: false
+        # PIN de acceso para proteger escrituras y calificaciones en la Web App PWA
+

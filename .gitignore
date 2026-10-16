@@ -1,0 +1,40 @@
+# Entornos y Credenciales
+.env
+.env.local
+.env.*.local
+*.env
+
+# Python Bytecode y Caché
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Entornos Virtuales
+.venv/
+venv/
+env/
+ENV/
+
+# Bases de datos y volcados locales
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+*.sql
+
+# Logs y Temporales
+*.log
+scratch/
+tmp/
+.temp/
+
+# IDEs y SO
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

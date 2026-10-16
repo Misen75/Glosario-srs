@@ -1,0 +1,8 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+psycopg2-binary>=2.9.9
+beautifulsoup4>=4.12
+httpx>=0.28
+google-genai>=1.0
+pydantic>=2.7
+python-dotenv>=1.0
