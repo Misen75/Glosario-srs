@@ -145,23 +145,55 @@ def format_captured_term(result) -> str:
     card = result.card
     tradeoff = card.term.tradeoff_when_not_to_use or "No especificado."
     status_header = (
-        "✨ <b>¡NUEVO TÉRMINO AÑADIDO AL GLOSARIO!</b>"
+        "✨ <b>¡NUEVA ACEPCIÓN AÑADIDA AL GLOSARIO!</b>"
         if result.created
-        else "ℹ️ <b>EL TÉRMINO YA EXISTÍA EN EL GLOSARIO:</b>"
+        else "ℹ️ <b>EL TÉRMINO YA EXISTE EN ESTE ÁMBITO:</b>"
     )
     if result.new_category:
-        status_header += "\n<i>(Se creó una nueva categoría para agruparlo)</i>"
+        status_header += "\n<i>(Se creó una nueva categoría para agrupar este ámbito)</i>"
+
+    other_cards = [c for c in getattr(result, "existing_cards", ()) if c.term.id != card.term.id]
+    other_html = ""
+    if other_cards:
+        items = "\n".join(
+            f"  • <b>{escape_html(c.category.name)}</b> ({escape_html(c.category.macro_area)}, Zoom {int(c.category.zoom_level)})"
+            for c in other_cards
+        )
+        other_html = f"\n\n🗂️ <b>Otras interpretaciones ya registradas de «{escape_html(card.term.term)}»:</b>\n{items}"
+
+    scopes_hint = ""
+    if getattr(result, "suggested_scopes", ()):
+        scopes_hint = (
+            f"\n\n🔍 <i>¿Deseas agregar la interpretación de <b>{escape_html(card.term.term)}</b> en otro ámbito? "
+            f"Toca un botón abajo o escribe <code>{escape_html(card.term.term)} (Ámbito)</code>:</i>"
+        )
 
     return (
         f"{status_header}\n\n"
         f"📌 <b>{escape_html(card.term.term)}</b>\n"
-        f"🏷️ <b>Categoría:</b> {escape_html(card.category.name)} (Zoom {int(card.category.zoom_level)})\n"
+        f"🏷️ <b>Ámbito / Categoría:</b> {escape_html(card.category.name)} (Zoom {int(card.category.zoom_level)})\n"
         f"📍 <b>Área:</b> {escape_html(card.category.macro_area)}\n\n"
         f"📋 <b>Definición Técnica:</b>\n{escape_html(card.term.technical_definition)}\n\n"
         f"💡 <b>Analogía Cotidiana:</b>\n{escape_html(card.term.daily_analogy)}\n\n"
-        f"⚠️ <b>Trade-off / Cuándo NO usarlo:</b>\n{escape_html(tradeoff)}\n\n"
-        f"<i>Estado SRS: Guardado en PostgreSQL · Repaso programado para hoy.</i>"
+        f"⚠️ <b>Trade-off / Cuándo NO usarlo:</b>\n{escape_html(tradeoff)}"
+        f"{other_html}"
+        f"{scopes_hint}"
     )
+
+
+def keyboard_captured_term(result) -> Optional[dict]:
+    scopes = getattr(result, "suggested_scopes", ())
+    term_id = result.card.term.id
+    if not scopes or not term_id:
+        return None
+    rows = []
+    for s in scopes[:4]:
+        # Telegram callback_data max 64 bytes -> truncamos el nombre del scope de forma segura en UTF-8
+        safe_scope = s.strip().replace(":", " ")
+        while len(f"scope:{term_id}:{safe_scope}".encode("utf-8")) > 62:
+            safe_scope = safe_scope[:-1]
+        rows.append([{"text": f"➕ Ámbito: {s}", "callback_data": f"scope:{term_id}:{safe_scope}"}])
+    return {"inline_keyboard": rows}
 
 
 def keyboard_front(term_id: int, step: int = 1) -> dict:
@@ -254,6 +286,24 @@ def init_webhook_routes(service_factory):
             if data == "session:start" and chat_id:
                 await send_next_review_card(service, chat_id, step=1)
 
+            elif data.startswith("scope:") and chat_id:
+                parts = data.split(":", 2)
+                if len(parts) == 3:
+                    term_id = int(parts[1])
+                    target_scope = parts[2]
+                    base_card = service.get_card(term_id)
+                    if base_card:
+                        await call_telegram_api("sendChatAction", {"chat_id": chat_id, "action": "typing"})
+                        try:
+                            res = service.capture_term(base_card.term.term, target_scope=target_scope)
+                            await send_message(
+                                chat_id=chat_id,
+                                text=format_captured_term(res),
+                                reply_markup=keyboard_captured_term(res),
+                            )
+                        except Exception as e:
+                            await send_message(chat_id=chat_id, text=f"❌ Error generando ámbito: {escape_html(str(e))}")
+
             elif data.startswith("rev:") and chat_id and message_id:
                 parts = data.split(":")
                 term_id = int(parts[1])
@@ -342,7 +392,7 @@ def init_webhook_routes(service_factory):
                 f"Tu Chat ID es: <code>{sender_id}</code>\n"
                 f"Base de datos: <b>PostgreSQL en la Nube</b>\n\n"
                 f"<b>Uso rápido:</b>\n"
-                f"• Escribe el nombre de un concepto (ej. <code>Circuit Breaker</code>, <code>CQRS</code>, <code>Habeas Corpus (Derecho)</code>) y la IA generará la ficha canónica.\n"
+                f"• Escribe el nombre de un concepto (ej. <code>REST</code>, <code>Circuit Breaker</code>, <code>Proceso (Derecho Procesal)</code>) y la IA generará la ficha canónica y te sugerirá otros ámbitos donde aplica.\n"
                 f"• Usa /repasar para iniciar una tanda dosificada de {SESSION_CARD_LIMIT} tarjetas.\n"
                 f"• Usa /stats para ver tus métricas."
             )
@@ -371,7 +421,7 @@ def init_webhook_routes(service_factory):
         try:
             result = service.capture_term(raw_text)
             reply = format_captured_term(result)
-            await send_message(chat_id=chat_id, text=reply)
+            await send_message(chat_id=chat_id, text=reply, reply_markup=keyboard_captured_term(result))
         except InvalidTermError as e:
             await send_message(
                 chat_id=chat_id,

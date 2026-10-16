@@ -96,12 +96,15 @@ class InMemoryRepository:
             counts[t.category_id] = counts.get(t.category_id, 0) + 1
         return counts
 
-    def find_term_by_name(self, name: str) -> Term | None:
+    def find_terms_by_name(self, name: str) -> list[Term]:
         norm = name.strip().casefold()
-        for t in self.terms.values():
-            if t.term.strip().casefold() == norm:
-                return t
-        return None
+        return [t for t in self.terms.values() if t.term.strip().casefold() == norm]
+
+    def find_term_by_name(self, name: str, category_id: int | None = None) -> Term | None:
+        matches = self.find_terms_by_name(name)
+        if category_id is not None:
+            return next((t for t in matches if t.category_id == category_id), None)
+        return matches[0] if matches else None
 
     def get_term(self, tid: int) -> Term | None:
         return self.terms.get(tid)
@@ -112,9 +115,10 @@ class InMemoryRepository:
         return list(self.terms.values())
 
     def add_term(self, category_id: int, draft: NewTermDraft, today: date | None = None) -> Term:
-        if self.find_term_by_name(draft.term):
+        existing = self.find_term_by_name(draft.term, category_id=category_id)
+        if existing:
             from src.infrastructure.db_repository import TermAlreadyExistsError
-            raise TermAlreadyExistsError(self.find_term_by_name(draft.term))
+            raise TermAlreadyExistsError(existing)
 
         tid = self._next_term_id
         self._next_term_id += 1
@@ -308,6 +312,38 @@ class TestCloudEndpoints(unittest.TestCase):
         for noise in ("Hola", "buenos días", "gracias", "ok", "?", "jaja"):
             with self.assertRaises(InvalidTermError):
                 enricher.enrich(noise, [])
+
+    def test_multi_scope_same_term_different_categories(self):
+        c_arch = self.repo.get_or_create_category(
+            "Ingeniería de Software", "Arquitectura de Software", "Estilo macro", ZoomLevel.MACRO
+        )
+        c_prog = self.repo.get_or_create_category(
+            "Ingeniería de Software", "Programación de APIs", "Implementación en código", ZoomLevel.MICRO
+        )
+        d_arch = NewTermDraft(
+            term="REST",
+            macro_area="Ingeniería de Software",
+            category_name="Arquitectura de Software",
+            category_description="Estilo macro",
+            zoom_level=ZoomLevel.MACRO,
+            technical_definition="Estilo arquitectónico de Roy Fielding para sistemas hipermedia distribuidos.",
+            daily_analogy="Un catálogo con enlaces navegables.",
+            tradeoff_when_not_to_use="Overhead en comunicación binaria de ultra baja latencia.",
+        )
+        d_prog = NewTermDraft(
+            term="REST",
+            macro_area="Ingeniería de Software",
+            category_name="Programación de APIs",
+            category_description="Implementación en código",
+            zoom_level=ZoomLevel.MICRO,
+            technical_definition="Convención de programación de controladores HTTP usando verbos CRUD y JSON.",
+            daily_analogy="Un formulario estandarizado de pedidos.",
+            tradeoff_when_not_to_use="Peticiones anidadas complejas donde GraphQL evita over-fetching.",
+        )
+        t1 = self.repo.add_term(c_arch.id, d_arch)
+        t2 = self.repo.add_term(c_prog.id, d_prog)
+        self.assertNotEqual(t1.id, t2.id)
+        self.assertEqual(len(self.repo.find_terms_by_name("REST")), 2)
 
 
 if __name__ == "__main__":

@@ -47,34 +47,44 @@ class _AIFicha(BaseModel):
         default="",
         description="Si is_valid_concept es False, explicación breve y amable de por qué no es un término almacenable. Si es True, cadena vacía."
     )
-    canonical_term: str = Field(description="Nombre canónico del término. Si es sigla, 'SIGLA (Nombre completo)'. Si es polisémico y pertenece a un área específica fuera del software base, desambigua con 'Término (Área)'.")
+    canonical_term: str = Field(description="Nombre canónico limpio del término (sin sufijos de área entre paréntesis, ya que la categoría define el ámbito). Si es sigla, 'SIGLA (Nombre completo)'.")
     macro_area: str = Field(description="Macro-área / disciplina fundamentada (ej. Ingeniería de Software, Derecho, Economía). Reusa una existente si aplica.")
-    category: str = Field(description="Nombre de la categoría o sub-disciplina específica. Reusa EXACTAMENTE una existente si encaja.")
+    category: str = Field(description="Nombre de la categoría o ámbito específico donde se interpreta el término. Reusa una existente solo si representa exactamente este mismo ámbito.")
     is_new_category: bool
     category_description: str = Field(description="Solo si is_new_category: explicación sencilla de la categoría y su nivel de zoom. Si no, cadena vacía.")
     zoom_level: int = Field(description="1=Micro/Detalle/Código/Artículo, 2=Medio/Módulos/Instituciones, 3=Macro/Arquitectura/Rama, 4=Infraestructura/Fundamentos/Doctrina")
     technical_definition: str
     daily_analogy: str
     tradeoff_when_not_to_use: str
+    other_valid_scopes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Lista de otros ámbitos, sub-ramas o niveles de abstracción verídicos donde este mismo término "
+            "tiene una interpretación distinta (ej. ['Programación de APIs', 'Diseño de Sistemas Distribuidos', 'Derecho Procesal']). "
+            "Máximo 4 ámbitos cortos (máx 32 caracteres cada uno). Vacío si solo tiene una única interpretación universal."
+        ),
+    )
 
 
 _SYSTEM = """Eres un Arquitecto de Conocimiento Canónico y redactor experto multidisciplinar (Ingeniería de Software, Ciencias de la Computación, Derecho, Economía y Ciencias Exactas) que mantiene un glosario de estudio riguroso en español.
-Tu tarea: dado el nombre de un término (con o sin área entre paréntesis), validar si es un concepto real y producir su ficha en JSON siguiendo estándares oficiales de la industria o academia.
+Tu tarea: dado el nombre de un término (y opcionalmente un ámbito/perspectiva objetivo), validar si es un concepto real y producir su ficha en JSON siguiendo estándares oficiales de la industria o academia.
 
 Reglas de validación y estándares:
 0. FILTRO ANTI-BASURA (is_valid_concept): Si el usuario envía un saludo ("Hola", "Buenos días"), una frase conversacional ("¿cómo estás?", "gracias"), números sueltos o texto sin valor conceptual, marca is_valid_concept=false, explica en rejection_reason que eres un glosario conceptual y rellena el resto con valores neutros breves.
 1. ESTÁNDARES CANÓNICOS: Valida el significado contra las fuentes cero de la disciplina:
-   - En Software/Computación: IEEE SWEBOK, ACM CCS, GoF (Design Patterns), Martin Kleppmann (DDIA), Robert C. Martin (Clean Architecture), Eric Evans (DDD), RFCs/ISO.
+   - En Software/Computación: IEEE SWEBOK, ACM CCS, GoF (Design Patterns), Martin Kleppmann (DDIA), Robert C. Martin (Clean Architecture), Eric Evans (DDD), Roy Fielding (REST), RFCs/ISO.
    - En Derecho: Doctrina jurídica estándar, Teoría General del Derecho, Derecho Constitucional, Civil, Procesal, Penal o Administrativo.
    - En otras disciplinas: Nomenclatura Internacional de la UNESCO / CDU.
-2. POLISEMIA Y DESAMBIGUACIÓN: Si un término tiene varios significados según el área (ej. "Proceso", "Contrato", "Dominio", "Actor"):
-   - Si el usuario especificó el área (ej. "Contrato (Derecho)" o "Derecho: Contrato"), enfócate 100% en esa disciplina y nombra canonical_term como "Contrato (Derecho Civil)".
-   - Si no especificó el área y el término es nativo de Ingeniería de Software, prioriza Ingeniería de Software. Si es propio de otra ciencia (ej. "Habeas Corpus", "Usucapión", "Inflación"), clasifícalo en su macro_area correspondiente ("Derecho", "Economía", etc.).
-3. technical_definition: entre 40 y 65 palabras. Rigurosa y validada. Empieza con un sustantivo clasificador ("Patrón que...", "Principio jurídico que...", "Institución procesal que...", "Mecanismo que..."). Explica QUÉ es, PARA QUÉ sirve y qué problema o ambigüedad resuelve. Sin markdown, sin viñetas, en prosa.
+2. MÚLTIPLES INTERPRETACIONES POR ÁMBITO (1:N):
+   - Un mismo término (ej. "REST", "Proceso", "Interfaz", "Contrato", "Estado") puede tener distintas interpretaciones según el ámbito o nivel de zoom (ej. en Arquitectura/Diseño de Software vs. en Programación/Implementación de Código vs. en Derecho).
+   - Mantén `canonical_term` con el nombre limpio del término (ej. "REST (Representational State Transfer)" o "Contrato"), porque la columna `category` y `macro_area` ya identifican bajo qué ámbito se está interpretando.
+   - Si se solicita un ÁMBITO OBJETIVO específico, redacta la definición, analogía y trade-off 100% desde ese ámbito y ubícalo en la categoría que corresponda a ese ámbito (nunca en las categorías excluidas).
+   - En `other_valid_scopes`, enumera hasta 4 otros ámbitos reales donde este mismo término tenga otra interpretación valiosa para estudiar.
+3. technical_definition: entre 40 y 65 palabras. Rigurosa y validada. Empieza con un sustantivo clasificador ("Estilo arquitectónico que...", "Convención de programación que...", "Principio jurídico que...", "Mecanismo que..."). Explica QUÉ es en ese ámbito, PARA QUÉ sirve y qué problema resuelve. Sin markdown, sin viñetas, en prosa.
 4. daily_analogy: máximo 2 oraciones. Analogía física o cotidiana directa y memorable. Formato preferido: "Objeto o escena concreta: explicación de por qué se parece."
 5. tradeoff_when_not_to_use: exactamente 1 oración con el límite, excepción, costo oculto o escenario en que NO aplica o resulta contraproducente.
-6. Categoría: reutiliza EXACTAMENTE el nombre y la macro-área de una categoría existente si el término encaja ahí. Solo si pertenece a otra disciplina o sub-rama no listada, propone una nueva (is_new_category=true) con category_description clara.
-7. zoom_level: 1=Micro (código/regla/artículo), 2=Medio (módulo/patrón/contrato), 3=Macro (arquitectura/sistema/rama), 4=Infraestructura/Fundamentos/Doctrina.
+6. Categoría: reutiliza el nombre y la macro-área de una categoría existente SOLO si corresponde exactamente al ámbito que estás redactando y no está en la lista de categorías excluidas. De lo contrario, crea una nueva categoría específica para ese ámbito (is_new_category=true).
+7. zoom_level: 1=Micro (código/implementación/artículo), 2=Medio (módulo/patrón/contrato), 3=Macro (arquitectura/sistema/rama), 4=Infraestructura/Fundamentos/Doctrina.
 8. Español neutro. Conserva en inglés o latín los términos técnicos/jurídicos consagrados cuando corresponda.
 """
 
@@ -115,8 +125,14 @@ class GeminiEnricher:
 
     # ------------------------------------------------------------------ prompt
     @staticmethod
-    def _build_prompt(term: str, categories: Sequence[Category],
-                      examples: Sequence[tuple[Term, Category]], feedback: str = "") -> str:
+    def _build_prompt(
+        term: str,
+        categories: Sequence[Category],
+        examples: Sequence[tuple[Term, Category]],
+        feedback: str = "",
+        target_scope: Optional[str] = None,
+        exclude_categories: Sequence[str] = (),
+    ) -> str:
         cats = "\n".join(
             f'- macro_area="{c.macro_area}" | category="{c.name}" | zoom={int(c.zoom_level)} | {c.description}'
             for c in categories
@@ -129,13 +145,24 @@ class GeminiEnricher:
         prompt = (f"CATEGORÍAS EXISTENTES:\n{cats}\n\n"
                   f"EJEMPLOS DE ESTILO (imítalos):\n{shots}\n\n"
                   f'NUEVO TÉRMINO A DOCUMENTAR: "{term}"')
+        if target_scope:
+            prompt += (
+                f'\nÁMBITO / PERSPECTIVA OBLIGATORIA: Interpreta y redacta "{term}" '
+                f'EXCLUSIVAMENTE desde el ámbito de "{target_scope}".'
+            )
+        if exclude_categories:
+            excl = ", ".join(f'"{c}"' for c in exclude_categories)
+            prompt += (
+                f"\nCATEGORÍAS YA OCUPADAS POR OTRAS INTERPRETACIONES DE ESTE TÉRMINO "
+                f"(PROHIBIDO elegir cualquiera de estas; elige o crea una categoría distinta para este nuevo ámbito): {excl}"
+            )
         if feedback:
             prompt += f"\n\nCORRIGE ESTO DE TU RESPUESTA ANTERIOR: {feedback}"
         return prompt
 
     # -------------------------------------------------------------- validation
     @staticmethod
-    def _problems(f: _AIFicha) -> list[str]:
+    def _problems(f: _AIFicha, exclude_categories: Sequence[str] = ()) -> list[str]:
         if not f.is_valid_concept:
             return []
         p = []
@@ -150,11 +177,20 @@ class GeminiEnricher:
             p.append("zoom_level debe ser 1, 2, 3 o 4.")
         if not f.category.strip() or not f.macro_area.strip():
             p.append("category y macro_area son obligatorios.")
+        excl_norm = {c.strip().casefold() for c in exclude_categories}
+        if f.category.strip().casefold() in excl_norm:
+            p.append(f"La categoría '{f.category}' ya tiene registrada otra acepción de este término; debes usar o crear una categoría diferente que represente el nuevo ámbito.")
         return p
 
     # ------------------------------------------------------------------ public
-    def enrich(self, term: str, categories: Sequence[Category],
-               examples: Sequence[tuple[Term, Category]] = ()) -> NewTermDraft:
+    def enrich(
+        self,
+        term: str,
+        categories: Sequence[Category],
+        examples: Sequence[tuple[Term, Category]] = (),
+        target_scope: Optional[str] = None,
+        exclude_categories: Sequence[str] = (),
+    ) -> NewTermDraft:
         from google.genai import types
 
         term = " ".join(term.split())
@@ -174,7 +210,11 @@ class GeminiEnricher:
             try:
                 resp = client.models.generate_content(
                     model=self.model,
-                    contents=self._build_prompt(term, categories, examples, feedback),
+                    contents=self._build_prompt(
+                        term, categories, examples, feedback,
+                        target_scope=target_scope,
+                        exclude_categories=exclude_categories,
+                    ),
                     config=types.GenerateContentConfig(
                         system_instruction=_SYSTEM,
                         response_mime_type="application/json",
@@ -188,7 +228,7 @@ class GeminiEnricher:
             if not ficha.is_valid_concept:
                 reason = ficha.rejection_reason.strip() or f"«{term}» no se reconoce como un concepto académico o técnico válido."
                 raise InvalidTermError(reason)
-            problems = self._problems(ficha)
+            problems = self._problems(ficha, exclude_categories=exclude_categories)
             if not problems:
                 break
             feedback = " ".join(problems)
@@ -207,9 +247,11 @@ class GeminiEnricher:
             macro, name = f.macro_area.strip(), f.category.strip()
             desc = f.category_description.strip() or f"Categoría de {macro}."
             zoom = ZoomLevel(min(4, max(1, f.zoom_level)))
+        scopes = tuple(s.strip()[:35] for s in (f.other_valid_scopes or []) if s and s.strip())[:4]
         return NewTermDraft(
             term=f.canonical_term.strip(), macro_area=macro, category_name=name, category_description=desc,
             zoom_level=zoom, technical_definition=" ".join(f.technical_definition.split()),
             daily_analogy=" ".join(f.daily_analogy.split()),
             tradeoff_when_not_to_use=" ".join(f.tradeoff_when_not_to_use.split()),
+            other_scopes=scopes,
         )

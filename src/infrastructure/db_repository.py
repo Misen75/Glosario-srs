@@ -43,11 +43,12 @@ CREATE TABLE IF NOT EXISTS categories (
 CREATE TABLE IF NOT EXISTS terms (
     id                       SERIAL PRIMARY KEY,
     category_id              INTEGER NOT NULL REFERENCES categories(id),
-    term                     VARCHAR(200) NOT NULL UNIQUE,
+    term                     VARCHAR(200) NOT NULL,
     technical_definition     TEXT NOT NULL,
     daily_analogy            TEXT NOT NULL,
     tradeoff_when_not_to_use TEXT,
-    created_at               TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    created_at               TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_terms_category_term UNIQUE (category_id, term)
 );
 
 CREATE TABLE IF NOT EXISTS srs_state (
@@ -265,16 +266,20 @@ class PostgresGlossaryRepository:
         no_accents = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
         return " ".join(no_accents.casefold().split())
 
-    def find_term_by_name(self, name: str) -> Optional[Term]:
+    def find_terms_by_name(self, name: str) -> list[Term]:
+        """Devuelve todas las acepciones registradas de un mismo término en distintas categorías."""
         key = self.normalize_name(name)
         with self._connect() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("SELECT * FROM terms")
+                cur.execute("SELECT * FROM terms ORDER BY id")
                 rows = cur.fetchall()
-        for r in rows:
-            if self.normalize_name(r["term"]) == key:
-                return self._to_term(r)
-        return None
+        return [self._to_term(r) for r in rows if self.normalize_name(r["term"]) == key]
+
+    def find_term_by_name(self, name: str, category_id: Optional[int] = None) -> Optional[Term]:
+        matches = self.find_terms_by_name(name)
+        if category_id is not None:
+            return next((t for t in matches if t.category_id == category_id), None)
+        return matches[0] if matches else None
 
     def get_term(self, term_id: int) -> Optional[Term]:
         with self._connect() as conn:
@@ -297,7 +302,7 @@ class PostgresGlossaryRepository:
         return [self._to_term(r) for r in rows]
 
     def add_term(self, category_id: int, draft: NewTermDraft, today: Optional[date] = None) -> Term:
-        existing = self.find_term_by_name(draft.term)
+        existing = self.find_term_by_name(draft.term, category_id=category_id)
         if existing:
             raise TermAlreadyExistsError(existing)
 

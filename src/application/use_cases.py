@@ -22,8 +22,14 @@ from src.infrastructure.db_repository import (
 class TermEnricher(Protocol):
     available: bool
 
-    def enrich(self, term: str, categories: Sequence[Category],
-               examples: Sequence[tuple[Term, Category]] = ()) -> NewTermDraft: ...
+    def enrich(
+        self,
+        term: str,
+        categories: Sequence[Category],
+        examples: Sequence[tuple[Term, Category]] = (),
+        target_scope: Optional[str] = None,
+        exclude_categories: Sequence[str] = (),
+    ) -> NewTermDraft: ...
 
 
 @dataclass(frozen=True)
@@ -37,8 +43,10 @@ class TermCard:
 @dataclass(frozen=True)
 class CaptureResult:
     card: TermCard
-    created: bool              # False => ya existía (no se tocó nada)
+    created: bool              # False => ya existía en ese ámbito (no se tocó nada)
     new_category: bool = False
+    existing_cards: tuple[TermCard, ...] = ()
+    suggested_scopes: tuple[str, ...] = ()
 
 
 class GlossaryService:
@@ -70,30 +78,111 @@ class GlossaryService:
         return [Area(name, tuple(sorted(cs, key=lambda c: (c.zoom_level, c.id))))
                 for name, cs in grouped.items()]
 
+    def _find_all_by_name(self, name: str) -> list[Term]:
+        if hasattr(self.repo, "find_terms_by_name"):
+            return self.repo.find_terms_by_name(name)
+        single = self.repo.find_term_by_name(name)
+        return [single] if single else []
+
+    @staticmethod
+    def _parse_term_and_scope(raw_name: str, explicit_scope: Optional[str] = None) -> tuple[str, Optional[str]]:
+        import re
+        cleaned = " ".join(raw_name.split())
+        if explicit_scope:
+            return cleaned, explicit_scope.strip()
+        # Soporta formato "Término (Ámbito)" o "Ámbito: Término"
+        m_paren = re.match(r"^(.+?)\s*\(([^)]+)\)\s*$", cleaned)
+        if m_paren:
+            return m_paren.group(1).strip(), m_paren.group(2).strip()
+        if ":" in cleaned:
+            parts = cleaned.split(":", 1)
+            if len(parts[0].strip()) >= 3 and len(parts[1].strip()) >= 2:
+                return parts[1].strip(), parts[0].strip()
+        return cleaned, None
+
     # ------------------------------------------------------------ captura
-    def capture_term(self, raw_name: str) -> CaptureResult:
-        """Nombre -> (si no existe) IA -> INSERT. Nunca modifica registros previos."""
-        name = " ".join(raw_name.split())
-        existing = self.repo.find_term_by_name(name)
-        if existing:
-            return CaptureResult(self._card(existing), created=False)
+    def capture_term(self, raw_name: str, target_scope: Optional[str] = None) -> CaptureResult:
+        """Nombre (+ ámbito opcional) -> IA -> INSERT en su categoría correspondiente (1:N por ámbito)."""
+        base_name, scope = self._parse_term_and_scope(raw_name, target_scope)
+        existing_terms = self._find_all_by_name(base_name)
+
+        # Si el usuario no pidió un nuevo ámbito específico y ya existen acepciones en la BD:
+        if existing_terms and not scope:
+            cards = tuple(self._card(t) for t in existing_terms)
+            occupied_cats = {c.category.name.casefold() for c in cards}
+            default_scopes = tuple(
+                s for s in (
+                    "Programación e Implementación",
+                    "Diseño de Software",
+                    "Arquitectura de Sistemas",
+                    "Bases de Datos y Persistencia",
+                )
+                if s.casefold() not in occupied_cats
+            )[:3]
+            return CaptureResult(
+                card=cards[0],
+                created=False,
+                existing_cards=cards,
+                suggested_scopes=default_scopes,
+            )
+
         if not self.enricher or not self.enricher.available:
             raise RuntimeError("Autocompletado IA no configurado: define GEMINI_API_KEY en .env")
 
         categories = self.repo.list_categories()
         cats_by_id = {c.id: c for c in categories}
-        examples = [(t, cats_by_id[t.category_id])
-                    for n in self.STYLE_EXAMPLES if (t := self.repo.find_term_by_name(n))]
-        draft = self.enricher.enrich(name, categories, examples)
+        examples = [
+            (t, cats_by_id[t.category_id])
+            for n in self.STYLE_EXAMPLES
+            if (t := self.repo.find_term_by_name(n))
+        ]
+        exclude_cats = [cats_by_id[t.category_id].name for t in existing_terms if t.category_id in cats_by_id]
+
+        try:
+            draft = self.enricher.enrich(
+                base_name,
+                categories,
+                examples,
+                target_scope=scope,
+                exclude_categories=exclude_cats,
+            )
+        except TypeError:
+            # Retrocompatibilidad con dobles de prueba que reciben solo 3 argumentos
+            draft = self.enricher.enrich(base_name, categories, examples)
+
+        # Verificar también acepciones previas bajo el nombre canónico normalizado por la IA
+        canonical_existing = self._find_all_by_name(draft.term)
+        all_prev = {t.id: t for t in (*existing_terms, *canonical_existing) if t.id is not None}
 
         before = {c.id for c in categories}
-        cat = self.repo.get_or_create_category(draft.macro_area, draft.category_name,
-                                               draft.category_description, draft.zoom_level)
+        cat = self.repo.get_or_create_category(
+            draft.macro_area, draft.category_name, draft.category_description, draft.zoom_level
+        )
         try:
             term = self.repo.add_term(cat.id, draft)
-        except TermAlreadyExistsError as e:  # el nombre canónico de la IA ya existía
-            return CaptureResult(self._card(e.term), created=False)
-        return CaptureResult(self._card(term), created=True, new_category=cat.id not in before)
+        except TermAlreadyExistsError as e:
+            all_cards = tuple(self._card(t) for t in self._find_all_by_name(draft.term)) or (self._card(e.term),)
+            return CaptureResult(
+                card=self._card(e.term),
+                created=False,
+                existing_cards=all_cards,
+                suggested_scopes=draft.other_scopes,
+            )
+
+        all_now_terms = self._find_all_by_name(term.term) or [term]
+        all_now_cards = tuple(self._card(t) for t in all_now_terms)
+        occupied_names = {c.category.name.casefold() for c in all_now_cards}
+        filtered_scopes = tuple(
+            s for s in draft.other_scopes if s.casefold() not in occupied_names
+        )[:4]
+
+        return CaptureResult(
+            card=self._card(term),
+            created=True,
+            new_category=cat.id not in before,
+            existing_cards=all_now_cards,
+            suggested_scopes=filtered_scopes,
+        )
 
     # ---------------------------------------------------------------- SRS
     def due_cards(self, today: Optional[date] = None, limit: Optional[int] = None) -> list[TermCard]:

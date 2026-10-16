@@ -78,6 +78,7 @@ class NewTermDraft:
     technical_definition: str
     daily_analogy: str
     tradeoff_when_not_to_use: Optional[str]
+    other_scopes: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
