@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from src.application.use_cases import GlossaryService, TermCard
 from src.config import settings
 from src.domain.models import Category, Rating
-from src.infrastructure.ai_enricher import EnrichmentError
+from src.infrastructure.ai_enricher import EnrichmentError, InvalidTermError
 
 logger = logging.getLogger("web_routes")
 router = APIRouter(prefix="/api", tags=["Web App"])
@@ -151,6 +151,8 @@ def init_web_routes(service_factory):
         service: GlossaryService = service_factory()
         try:
             result = service.capture_term(body.term)
+        except InvalidTermError as e:
+            raise HTTPException(400, str(e))
         except RuntimeError as e:
             raise HTTPException(503, str(e))
         except EnrichmentError as e:
@@ -182,12 +184,13 @@ def init_web_routes(service_factory):
             "term_id": term_id,
             "interval_days": s.interval_days,
             "ease_factor": s.ease_factor,
+            "repetitions": s.repetitions,
             "next_review_date": s.next_review_date.isoformat(),
             "due_remaining": service.count_due(),
         }
 
     @router.get("/review/due")
-    def review_due(limit: int = 50):
+    def review_due(limit: int = 5):
         service: GlossaryService = service_factory()
         cards = service.due_cards(limit=limit)
         return {

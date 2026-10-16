@@ -302,6 +302,12 @@ class TestCloudEndpoints(unittest.TestCase):
         sw_res = self.client.get("/sw.js")
         self.assertEqual(sw_res.status_code, 200)
 
+    def test_greeting_guardrail_rejects_hola(self):
+        from src.infrastructure.ai_enricher import GeminiEnricher, InvalidTermError
+        enricher = GeminiEnricher(api_key="dummy_key")
+        for noise in ("Hola", "buenos días", "gracias", "ok", "?", "jaja"):
+            with self.assertRaises(InvalidTermError):
+                enricher.enrich(noise, [])
 
 
 if __name__ == "__main__":

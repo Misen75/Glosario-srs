@@ -22,34 +22,60 @@ class EnrichmentError(Exception):
     pass
 
 
+class InvalidTermError(EnrichmentError):
+    """Se lanza cuando el texto ingresado es un saludo, charla casual o no es un concepto válido."""
+    pass
+
+
+# Filtro rápido determinista para saludos y mensajes conversacionales cortos (ahorra tokens de IA)
+_CONVERSATIONAL_NOISE = {
+    "hola", "ola", "hello", "hi", "hey", "buenas", "buenos dias", "buenas tardes",
+    "buenas noches", "gracias", " muchas gracias", "ok", "okay", "vale", "dale",
+    "si", "no", "bien", "super", "genial", "perfecto", "listo", "ya", "test",
+    "prueba", "probando", "123", "1234", "ayuda", "help", "start", "menu",
+    "que tal", "como estas", "quien eres", "jaja", "jeje", "lol", "xd",
+}
+
+
 class _AIFicha(BaseModel):
     """Esquema JSON que se exige al LLM (structured output)."""
-    canonical_term: str = Field(description="Nombre canónico del término. Si es sigla, 'SIGLA (Nombre completo)'.")
-    macro_area: str = Field(description="Macro-área / disciplina. Reusa una existente si aplica.")
-    category: str = Field(description="Nombre de la categoría. Reusa EXACTAMENTE una existente si encaja.")
+    is_valid_concept: bool = Field(
+        default=True,
+        description="True si es un término o concepto académico, técnico, jurídico, científico o profesional legítimo. False si es un saludo ('Hola'), charla casual, frase sin sentido o mensaje conversacional."
+    )
+    rejection_reason: str = Field(
+        default="",
+        description="Si is_valid_concept es False, explicación breve y amable de por qué no es un término almacenable. Si es True, cadena vacía."
+    )
+    canonical_term: str = Field(description="Nombre canónico del término. Si es sigla, 'SIGLA (Nombre completo)'. Si es polisémico y pertenece a un área específica fuera del software base, desambigua con 'Término (Área)'.")
+    macro_area: str = Field(description="Macro-área / disciplina fundamentada (ej. Ingeniería de Software, Derecho, Economía). Reusa una existente si aplica.")
+    category: str = Field(description="Nombre de la categoría o sub-disciplina específica. Reusa EXACTAMENTE una existente si encaja.")
     is_new_category: bool
     category_description: str = Field(description="Solo si is_new_category: explicación sencilla de la categoría y su nivel de zoom. Si no, cadena vacía.")
-    zoom_level: int = Field(description="1=Micro/Código, 2=Medio/Módulos, 3=Macro/Arquitectura, 4=Infraestructura/Operación")
+    zoom_level: int = Field(description="1=Micro/Detalle/Código/Artículo, 2=Medio/Módulos/Instituciones, 3=Macro/Arquitectura/Rama, 4=Infraestructura/Fundamentos/Doctrina")
     technical_definition: str
     daily_analogy: str
     tradeoff_when_not_to_use: str
 
 
-_SYSTEM = """Eres un redactor técnico experto en ingeniería de software que mantiene un glosario de estudio en español.
-Tu tarea: dado SOLO el nombre de un término técnico, producir su ficha en JSON imitando EXACTAMENTE el estilo de los ejemplos.
+_SYSTEM = """Eres un Arquitecto de Conocimiento Canónico y redactor experto multidisciplinar (Ingeniería de Software, Ciencias de la Computación, Derecho, Economía y Ciencias Exactas) que mantiene un glosario de estudio riguroso en español.
+Tu tarea: dado el nombre de un término (con o sin área entre paréntesis), validar si es un concepto real y producir su ficha en JSON siguiendo estándares oficiales de la industria o academia.
 
-Reglas de redacción:
-1. technical_definition: entre 40 y 65 palabras. Rigurosa. Empieza con un sustantivo que clasifique el concepto
-   ("Patrón que...", "Principio que...", "Propiedad que...", "Mecanismo que..."). Explica QUÉ es y PARA QUÉ sirve,
-   y el problema que evita. Sin markdown, sin viñetas, en prosa.
-2. daily_analogy: máximo 2 oraciones. Analogía física o cotidiana directa y memorable. Formato preferido:
-   "Objeto o escena concreta: explicación de por qué se parece." (como los ejemplos).
-3. tradeoff_when_not_to_use: exactamente 1 oración con el costo oculto o el escenario en que conviene evitarlo.
-4. Categoría: reutiliza EXACTAMENTE el nombre y la macro-área de una categoría existente si el término encaja ahí.
-   Solo si pertenece a otra disciplina o a ninguna categoría existente, propone una nueva (is_new_category=true)
-   con una category_description en lenguaje sencillo que explique qué agrupa y en qué nivel de zoom del software actúa.
-5. zoom_level: 1=Micro/Código, 2=Medio/Módulos, 3=Macro/Arquitectura, 4=Infraestructura/Operación.
-6. Español neutro. Conserva en inglés los nombres propios de patrones o tecnologías (como en los ejemplos).
+Reglas de validación y estándares:
+0. FILTRO ANTI-BASURA (is_valid_concept): Si el usuario envía un saludo ("Hola", "Buenos días"), una frase conversacional ("¿cómo estás?", "gracias"), números sueltos o texto sin valor conceptual, marca is_valid_concept=false, explica en rejection_reason que eres un glosario conceptual y rellena el resto con valores neutros breves.
+1. ESTÁNDARES CANÓNICOS: Valida el significado contra las fuentes cero de la disciplina:
+   - En Software/Computación: IEEE SWEBOK, ACM CCS, GoF (Design Patterns), Martin Kleppmann (DDIA), Robert C. Martin (Clean Architecture), Eric Evans (DDD), RFCs/ISO.
+   - En Derecho: Doctrina jurídica estándar, Teoría General del Derecho, Derecho Constitucional, Civil, Procesal, Penal o Administrativo.
+   - En otras disciplinas: Nomenclatura Internacional de la UNESCO / CDU.
+2. POLISEMIA Y DESAMBIGUACIÓN: Si un término tiene varios significados según el área (ej. "Proceso", "Contrato", "Dominio", "Actor"):
+   - Si el usuario especificó el área (ej. "Contrato (Derecho)" o "Derecho: Contrato"), enfócate 100% en esa disciplina y nombra canonical_term como "Contrato (Derecho Civil)".
+   - Si no especificó el área y el término es nativo de Ingeniería de Software, prioriza Ingeniería de Software. Si es propio de otra ciencia (ej. "Habeas Corpus", "Usucapión", "Inflación"), clasifícalo en su macro_area correspondiente ("Derecho", "Economía", etc.).
+3. technical_definition: entre 40 y 65 palabras. Rigurosa y validada. Empieza con un sustantivo clasificador ("Patrón que...", "Principio jurídico que...", "Institución procesal que...", "Mecanismo que..."). Explica QUÉ es, PARA QUÉ sirve y qué problema o ambigüedad resuelve. Sin markdown, sin viñetas, en prosa.
+4. daily_analogy: máximo 2 oraciones. Analogía física o cotidiana directa y memorable. Formato preferido: "Objeto o escena concreta: explicación de por qué se parece."
+5. tradeoff_when_not_to_use: exactamente 1 oración con el límite, excepción, costo oculto o escenario en que NO aplica o resulta contraproducente.
+6. Categoría: reutiliza EXACTAMENTE el nombre y la macro-área de una categoría existente si el término encaja ahí. Solo si pertenece a otra disciplina o sub-rama no listada, propone una nueva (is_new_category=true) con category_description clara.
+7. zoom_level: 1=Micro (código/regla/artículo), 2=Medio (módulo/patrón/contrato), 3=Macro (arquitectura/sistema/rama), 4=Infraestructura/Fundamentos/Doctrina.
+8. Español neutro. Conserva en inglés o latín los términos técnicos/jurídicos consagrados cuando corresponda.
 """
 
 
@@ -59,6 +85,14 @@ def _word_count(text: str) -> int:
 
 def _sentence_count(text: str) -> int:
     return len([s for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s])
+
+
+def _normalize_check(text: str) -> str:
+    import unicodedata
+    decomposed = unicodedata.normalize("NFKD", text)
+    no_accents = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    cleaned = re.sub(r"[^\w\s]", "", no_accents.casefold())
+    return " ".join(cleaned.split())
 
 
 class GeminiEnricher:
@@ -102,6 +136,8 @@ class GeminiEnricher:
     # -------------------------------------------------------------- validation
     @staticmethod
     def _problems(f: _AIFicha) -> list[str]:
+        if not f.is_valid_concept:
+            return []
         p = []
         n = _word_count(f.technical_definition)
         if not DEF_MIN_WORDS <= n <= DEF_MAX_WORDS:
@@ -123,7 +159,14 @@ class GeminiEnricher:
 
         term = " ".join(term.split())
         if not term:
-            raise EnrichmentError("El término está vacío.")
+            raise InvalidTermError("El término está vacío.")
+
+        norm_check = _normalize_check(term)
+        if norm_check in _CONVERSATIONAL_NOISE or len(norm_check) < 2:
+            raise InvalidTermError(
+                f"«{term}» parece un saludo o mensaje conversacional, no un concepto técnico o académico para el glosario."
+            )
+
         client = self._get_client()
 
         feedback, ficha = "", None
@@ -136,12 +179,15 @@ class GeminiEnricher:
                         system_instruction=_SYSTEM,
                         response_mime_type="application/json",
                         response_schema=_AIFicha,
-                        temperature=0.4,
+                        temperature=0.3,
                     ),
                 )
             except Exception as e:  # red, cuota, clave inválida...
                 raise EnrichmentError(f"Error llamando a Gemini: {e}") from e
             ficha = resp.parsed if isinstance(resp.parsed, _AIFicha) else _AIFicha.model_validate_json(resp.text)
+            if not ficha.is_valid_concept:
+                reason = ficha.rejection_reason.strip() or f"«{term}» no se reconoce como un concepto académico o técnico válido."
+                raise InvalidTermError(reason)
             problems = self._problems(ficha)
             if not problems:
                 break

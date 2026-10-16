@@ -69,17 +69,17 @@ def init_cron_routes(service_factory):
         await send_message(
             chat_id=chat_id,
             text=f"⏰ <b>¡Hora de tu Repaso SRS!</b>\n"
-                 f"Tienes <b>{count}</b> término(s) listos para entrenar hoy en tu glosario de arquitectura.",
+                 f"Tienes <b>{count}</b> término(s) listos hoy. Entrenaremos una tanda ligera de hasta <b>5 tarjetas</b>.",
         )
 
-        # 2. Primera tarjeta interactiva
+        # 2. Primera tarjeta interactiva (step=1 de 5)
         due_cards = service.due_cards(today=today, limit=1)
         if due_cards:
             card = due_cards[0]
             await send_message(
                 chat_id=chat_id,
-                text=format_card_front(card, remaining=count),
-                reply_markup=keyboard_front(card.term.id),
+                text=format_card_front(card, remaining=count, step=1),
+                reply_markup=keyboard_front(card.term.id, step=1),
             )
 
         return {"status": "ok", "due_count": count, "notified": True, "chat_id": chat_id}

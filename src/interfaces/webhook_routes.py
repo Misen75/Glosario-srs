@@ -22,13 +22,14 @@ from pydantic import BaseModel
 from src.application.use_cases import GlossaryService, TermCard
 from src.config import settings
 from src.domain.models import Rating
-from src.infrastructure.ai_enricher import EnrichmentError
+from src.infrastructure.ai_enricher import EnrichmentError, InvalidTermError
 
 
 logger = logging.getLogger("telegram_webhook")
 router = APIRouter(prefix="/api/telegram", tags=["Telegram Webhook"])
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
+SESSION_CARD_LIMIT = 5
 
 
 def get_bot_token() -> Optional[str]:
@@ -114,10 +115,10 @@ def escape_html(text: str) -> str:
     )
 
 
-def format_card_front(card: TermCard, remaining: int = 0) -> str:
-    header = "🧠 <b>ENTRENAMIENTO SRS</b>"
+def format_card_front(card: TermCard, remaining: int = 0, step: int = 1, session_limit: int = SESSION_CARD_LIMIT) -> str:
+    header = f"🧠 <b>ENTRENAMIENTO SRS (Tarjeta {step}/{session_limit} de la tanda)</b>"
     if remaining > 0:
-        header += f" (Pendientes hoy: <b>{remaining}</b>)"
+        header += f"\n📚 <i>Total pendientes hoy: <b>{remaining}</b></i>"
     zoom_badge = f"[Zoom {int(card.category.zoom_level)}: {card.category.zoom_level.label}]"
     return (
         f"{header}\n\n"
@@ -163,15 +164,15 @@ def format_captured_term(result) -> str:
     )
 
 
-def keyboard_front(term_id: int) -> dict:
+def keyboard_front(term_id: int, step: int = 1) -> dict:
     return {
         "inline_keyboard": [
-            [{"text": "👁️ Mostrar Respuesta", "callback_data": f"rev:{term_id}"}]
+            [{"text": "👁️ Mostrar Respuesta", "callback_data": f"rev:{term_id}:{step}"}]
         ]
     }
 
 
-def keyboard_back(service: GlossaryService, card: TermCard) -> dict:
+def keyboard_back(service: GlossaryService, card: TermCard, step: int = 1) -> dict:
     previews = service.preview_intervals(card.srs)
     p1 = previews.get(Rating.FORGOTTEN, 0)
     p2 = previews.get(Rating.DOUBTED, 1)
@@ -184,16 +185,16 @@ def keyboard_back(service: GlossaryService, card: TermCard) -> dict:
     return {
         "inline_keyboard": [
             [
-                {"text": lbl_1, "callback_data": f"rate:{card.term.id}:1"},
-                {"text": lbl_2, "callback_data": f"rate:{card.term.id}:2"},
-                {"text": lbl_3, "callback_data": f"rate:{card.term.id}:3"},
+                {"text": lbl_1, "callback_data": f"rate:{card.term.id}:1:{step}"},
+                {"text": lbl_2, "callback_data": f"rate:{card.term.id}:2:{step}"},
+                {"text": lbl_3, "callback_data": f"rate:{card.term.id}:3:{step}"},
             ]
         ]
     }
 
 
 # ------------------------------------------------------------- Lógica de sesión SRS
-async def send_next_review_card(service: GlossaryService, chat_id: int | str):
+async def send_next_review_card(service: GlossaryService, chat_id: int | str, step: int = 1):
     due = service.due_cards(limit=1)
     if not due:
         await send_message(
@@ -205,11 +206,11 @@ async def send_next_review_card(service: GlossaryService, chat_id: int | str):
 
     card = due[0]
     total_due = service.count_due()
-    text = format_card_front(card, remaining=total_due)
+    text = format_card_front(card, remaining=total_due, step=step, session_limit=SESSION_CARD_LIMIT)
     await send_message(
         chat_id=chat_id,
         text=text,
-        reply_markup=keyboard_front(card.term.id),
+        reply_markup=keyboard_front(card.term.id, step=step),
     )
 
 
@@ -250,21 +251,27 @@ def init_webhook_routes(service_factory):
 
             await answer_callback_query(cq_id)
 
-            if data.startswith("rev:") and chat_id and message_id:
-                term_id = int(data.split(":")[1])
+            if data == "session:start" and chat_id:
+                await send_next_review_card(service, chat_id, step=1)
+
+            elif data.startswith("rev:") and chat_id and message_id:
+                parts = data.split(":")
+                term_id = int(parts[1])
+                step = int(parts[2]) if len(parts) > 2 else 1
                 card = service.get_card(term_id)
                 if card:
                     await edit_message_text(
                         chat_id=chat_id,
                         message_id=message_id,
                         text=format_card_back(card),
-                        reply_markup=keyboard_back(service, card),
+                        reply_markup=keyboard_back(service, card, step=step),
                     )
 
             elif data.startswith("rate:") and chat_id and message_id:
-                _, term_id_s, rating_s = data.split(":")
-                term_id = int(term_id_s)
-                rating = Rating(int(rating_s))
+                parts = data.split(":")
+                term_id = int(parts[1])
+                rating = Rating(int(parts[2]))
+                step = int(parts[3]) if len(parts) > 3 else 1
 
                 card = service.get_card(term_id)
                 new_state = service.review(term_id, rating, datetime.now())
@@ -277,14 +284,33 @@ def init_webhook_routes(service_factory):
                 term_name = card.term.term if card else f"ID {term_id}"
 
                 summary = (
-                    f"<b>{escape_html(term_name)}</b> calificado como: <b>{rating_labels[rating]}</b>\n"
+                    f"<b>{escape_html(term_name)}</b> ({step}/{SESSION_CARD_LIMIT}) calificado como: <b>{rating_labels[rating]}</b>\n"
                     f"📅 Próximo repaso: <b>{new_state.next_review_date.isoformat()}</b> "
                     f"(en {new_state.interval_days} días · EF: {new_state.ease_factor:.2f})\n"
                 )
                 await edit_message_text(chat_id=chat_id, message_id=message_id, text=summary)
 
-                # Enviar automáticamente la siguiente tarjeta
-                await send_next_review_card(service, chat_id)
+                # Verificar si se alcanzó el tope saludable de la tanda (5 tarjetas)
+                remaining = service.count_due()
+                if remaining == 0:
+                    await send_next_review_card(service, chat_id, step=1)
+                elif step >= SESSION_CARD_LIMIT:
+                    await send_message(
+                        chat_id=chat_id,
+                        text=(
+                            f"🎯 <b>¡Tanda de {SESSION_CARD_LIMIT} tarjetas completada!</b>\n"
+                            f"Excelente enfoque. Dosificar el estudio evita la fatiga cognitiva.\n"
+                            f"📌 Quedan <b>{remaining}</b> tarjeta(s) pendientes para tus próximos turnos.\n\n"
+                            f"<i>¿Deseas descansar o entrenar otra tanda de {SESSION_CARD_LIMIT} ahora mismo?</i>"
+                        ),
+                        reply_markup={
+                            "inline_keyboard": [
+                                [{"text": f"🔥 Otra tanda de {SESSION_CARD_LIMIT} tarjetas", "callback_data": "session:start"}]
+                            ]
+                        },
+                    )
+                else:
+                    await send_next_review_card(service, chat_id, step=step + 1)
 
             return {"ok": True}
 
@@ -312,12 +338,12 @@ def init_webhook_routes(service_factory):
         # Comandos
         if raw_text.startswith("/start") or raw_text.startswith("/help") or raw_text.startswith("/ayuda"):
             msg_text = (
-                f"👋 <b>¡Entrenador SRS Cloud activo en la nube!</b>\n\n"
+                f"👋 <b>¡Entrenador SRS Multidisciplinar activo en la nube!</b>\n\n"
                 f"Tu Chat ID es: <code>{sender_id}</code>\n"
                 f"Base de datos: <b>PostgreSQL en la Nube</b>\n\n"
                 f"<b>Uso rápido:</b>\n"
-                f"• Escribe el nombre de un término (ej. <code>Circuit Breaker</code>, <code>CQRS</code>, <code>Outbox Pattern</code>) y la IA generará la ficha en PostgreSQL.\n"
-                f"• Usa /repasar para iniciar tu sesión de repaso con botones interactivos.\n"
+                f"• Escribe el nombre de un concepto (ej. <code>Circuit Breaker</code>, <code>CQRS</code>, <code>Habeas Corpus (Derecho)</code>) y la IA generará la ficha canónica.\n"
+                f"• Usa /repasar para iniciar una tanda dosificada de {SESSION_CARD_LIMIT} tarjetas.\n"
                 f"• Usa /stats para ver tus métricas."
             )
             await send_message(chat_id=chat_id, text=msg_text)
@@ -329,7 +355,7 @@ def init_webhook_routes(service_factory):
                 f"📊 <b>ESTADÍSTICAS DEL GLOSARIO (PostgreSQL)</b>\n\n"
                 f"📚 Términos totales: <b>{st['total_terms']}</b>\n"
                 f"🏷️ Categorías: <b>{st['total_categories']}</b>\n"
-                f"🧠 Tarjetas pendientes hoy: <b>{st['due_today']}</b>\n"
+                f"🧠 Tarjetas pendientes hoy: <b>{st['due_today']}</b> (en tandas de {SESSION_CARD_LIMIT})\n"
                 f"✅ Repasadas hoy: <b>{st['reviewed_today']}</b>\n"
                 f"🤖 Enriquecedor IA: <b>{'Activo' if st['ai_available'] else 'Sin API Key'}</b>"
             )
@@ -337,7 +363,7 @@ def init_webhook_routes(service_factory):
             return {"ok": True}
 
         if raw_text.startswith("/repasar") or raw_text.startswith("/entrenar"):
-            await send_next_review_card(service, chat_id)
+            await send_next_review_card(service, chat_id, step=1)
             return {"ok": True}
 
         # Captura de término con IA
@@ -346,6 +372,16 @@ def init_webhook_routes(service_factory):
             result = service.capture_term(raw_text)
             reply = format_captured_term(result)
             await send_message(chat_id=chat_id, text=reply)
+        except InvalidTermError as e:
+            await send_message(
+                chat_id=chat_id,
+                text=(
+                    f"💬 <b>No se guardó en el glosario:</b>\n"
+                    f"{escape_html(str(e))}\n\n"
+                    f"<i>💡 Escribe un concepto técnico o académico (ej. <code>Event Sourcing</code>, "
+                    f"<code>Usucapión (Derecho)</code>) o usa /repasar para entrenar tus tarjetas.</i>"
+                ),
+            )
         except RuntimeError as e:
             await send_message(chat_id=chat_id, text=f"⚠️ Configuración: {escape_html(str(e))}")
         except EnrichmentError as e:
