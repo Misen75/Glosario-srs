@@ -197,6 +197,16 @@ class GeminiEnricher:
         if not term:
             raise InvalidTermError("El término está vacío.")
 
+        if len(term) > 120:
+            raise InvalidTermError(
+                f"El término es demasiado extenso ({len(term)} caracteres). El límite máximo es de 120 caracteres."
+            )
+
+        if target_scope and len(target_scope) > 60:
+            raise InvalidTermError(
+                f"El ámbito/scope es demasiado extenso ({len(target_scope)} caracteres). El límite máximo es de 60 caracteres."
+            )
+
         norm_check = _normalize_check(term)
         if norm_check in _CONVERSATIONAL_NOISE or len(norm_check) < 2:
             raise InvalidTermError(

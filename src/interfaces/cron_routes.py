@@ -17,6 +17,7 @@ from typing import Optional
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from src.application.use_cases import GlossaryService
+from src.config import settings
 from src.interfaces.webhook_routes import (
     format_card_front,
     get_allowed_chat_id,
@@ -39,13 +40,13 @@ def init_cron_routes(service_factory):
         x_cron_secret: Optional[str] = Header(None, alias="X-Cron-Secret"),
         authorization: Optional[str] = Header(None),
     ):
-        expected_secret = os.getenv("CRON_SECRET")
+        expected_secret = settings.CRON_SECRET
         if expected_secret:
             token = cron_secret or x_cron_secret
             if not token and authorization and authorization.startswith("Bearer "):
                 token = authorization.split("Bearer ", 1)[1].strip()
 
-            if token != expected_secret.strip():
+            if not token or not settings.verify_cron_secret(token):
                 raise HTTPException(status_code=403, detail="CRON_SECRET inválido o ausente.")
 
         chat_id = get_allowed_chat_id()

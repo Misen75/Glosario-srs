@@ -145,12 +145,41 @@
     });
   }
 
-  async function ensurePin() {
+  let activePinPromise = null;
+
+  async function ensurePin(errMsg = "") {
     let pin = getSavedPin();
     if (!pin) {
-      pin = await promptPin();
+      if (!activePinPromise) {
+        activePinPromise = promptPin(errMsg).finally(() => {
+          activePinPromise = null;
+        });
+      }
+      pin = await activePinPromise;
     }
     return pin;
+  }
+
+  async function fetchWithPin(url, options = {}) {
+    let pin = await ensurePin();
+    if (!pin) {
+      throw new Error("Se requiere PIN para acceder al sistema.");
+    }
+    const headers = {
+      ...(options.headers || {}),
+      "X-Web-Pin": pin,
+    };
+    let res = await fetch(url, { ...options, headers });
+    if (res.status === 401) {
+      clearSavedPin();
+      pin = await promptPin("PIN incorrecto. Ingresa tu WEB_ACCESS_PIN:");
+      if (!pin) {
+        throw new Error("PIN no autorizado.");
+      }
+      headers["X-Web-Pin"] = pin;
+      res = await fetch(url, { ...options, headers });
+    }
+    return res;
   }
 
   function showToast(msg, duration = 3000) {
@@ -189,10 +218,16 @@
   // --- Carga de datos iniciales ---
   async function loadData() {
     try {
+      const pin = await ensurePin();
+      if (!pin) {
+        showToast("Se requiere PIN para ver el glosario");
+        return;
+      }
+
       const [areasRes, termsRes, statsRes] = await Promise.all([
-        fetch("/api/areas").then(r => r.json()),
-        fetch("/api/terms").then(r => r.json()),
-        fetch("/api/stats").then(r => r.json()),
+        fetchWithPin("/api/areas").then(r => r.json()),
+        fetchWithPin("/api/terms").then(r => r.json()),
+        fetchWithPin("/api/stats").then(r => r.json()),
       ]);
       state.areas = areasRes;
       state.terms = termsRes;
@@ -352,24 +387,14 @@
     dom.addStatus.textContent = "Consultando a la IA y redactando ficha canónica...";
 
     try {
-      const res = await fetch("/api/terms", {
+      const res = await fetchWithPin("/api/terms", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Web-Pin": pin,
         },
         body: JSON.stringify({ term }),
       });
       const data = await res.json();
-      if (res.status === 401) {
-        clearSavedPin();
-        dom.addStatus.className = "add-status error";
-        dom.addStatus.textContent = "PIN no autorizado. Vuelve a ingresar tu PIN.";
-        showToast("PIN no autorizado");
-        dom.addSubmit.disabled = false;
-        await promptPin("PIN incorrecto. Ingresa el PIN configurado en WEB_ACCESS_PIN.");
-        return;
-      }
       if (!res.ok) {
         throw new Error(data.detail || "Error en el servidor");
       }
@@ -399,7 +424,8 @@
   // --- Vista 3: Flashcards SRS ---
   async function loadDueCards() {
     try {
-      const res = await fetch("/api/review/due");
+      const res = await fetchWithPin("/api/review/due");
+      if (!res.ok) return;
       const data = await res.json();
       state.dueCards = data.cards || [];
       state.currentDueIndex = 0;
@@ -486,28 +512,14 @@
     const card = state.dueCards[state.currentDueIndex];
     if (!card) return;
 
-    const pin = await ensurePin();
-    if (!pin) {
-      showToast("Operación cancelada: se requiere un PIN de acceso.");
-      return;
-    }
-
     try {
-      const res = await fetch(`/api/review/${card.id}`, {
+      const res = await fetchWithPin(`/api/review/${card.id}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Web-Pin": pin,
         },
         body: JSON.stringify({ rating }),
       });
-
-      if (res.status === 401) {
-        clearSavedPin();
-        showToast("PIN no autorizado para calificar");
-        await promptPin("PIN incorrecto. Ingresa el PIN configurado en WEB_ACCESS_PIN.");
-        return;
-      }
 
       if (!res.ok) {
         throw new Error("Error en la calificación");
@@ -529,7 +541,7 @@
       }
       
       // Actualizar stats
-      const statsRes = await fetch("/api/stats").then(r => r.json());
+      const statsRes = await fetchWithPin("/api/stats").then(r => r.json());
       state.stats = statsRes;
       updateStatsUI();
     } catch (err) {

@@ -56,6 +56,15 @@ class Settings:
             return False
         return secrets.compare_digest(str(token_candidate).strip(), str(secret).strip())
 
+    def verify_cron_secret(self, token_candidate: Optional[str]) -> bool:
+        """Verifica el header CRON_SECRET en tiempo constante (previene timing attacks)."""
+        secret = self.CRON_SECRET
+        if not secret:
+            return True
+        if not token_candidate:
+            return False
+        return secrets.compare_digest(str(token_candidate).strip(), str(secret).strip())
+
 
 
 settings = Settings()

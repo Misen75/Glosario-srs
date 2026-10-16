@@ -194,6 +194,9 @@ class TestCloudEndpoints(unittest.TestCase):
         os.environ.pop("CRON_SECRET", None)
         os.environ.pop("TELEGRAM_CHAT_ID", None)
 
+        from src.interfaces.web_routes import _failed_pin_attempts
+        _failed_pin_attempts.clear()
+
         self.client = TestClient(app)
 
 
@@ -246,11 +249,21 @@ class TestCloudEndpoints(unittest.TestCase):
         from src.config import settings
         settings.WEB_ACCESS_PIN = "7890"
 
-        # 1. POST /api/terms sin PIN -> 401 Unauthorized
+        # 1. Endpoints de lectura protegidos sin PIN -> 401 Unauthorized
+        for path in ("/api/stats", "/api/terms", "/api/areas", "/api/review/due"):
+            res = self.client.get(path)
+            self.assertEqual(res.status_code, 401, f"GET {path} debería requerir PIN")
+
+        # 2. Endpoints de lectura con PIN correcto -> 200 OK
+        for path in ("/api/stats", "/api/terms", "/api/areas", "/api/review/due"):
+            res = self.client.get(path, headers={"X-Web-Pin": "7890"})
+            self.assertEqual(res.status_code, 200, f"GET {path} debería responder 200 con PIN")
+
+        # 3. POST /api/terms sin PIN -> 401 Unauthorized
         res_no_pin = self.client.post("/api/terms", json={"term": "Circuit Breaker"})
         self.assertEqual(res_no_pin.status_code, 401)
 
-        # 2. POST /api/terms con PIN incorrecto -> 401 Unauthorized
+        # 4. POST /api/terms con PIN incorrecto -> 401 Unauthorized
         res_wrong_pin = self.client.post(
             "/api/terms",
             json={"term": "Circuit Breaker"},
@@ -258,17 +271,46 @@ class TestCloudEndpoints(unittest.TestCase):
         )
         self.assertEqual(res_wrong_pin.status_code, 401)
 
-        # 3. POST /api/review/1 sin PIN -> 401 Unauthorized
+        # 5. POST /api/review/1 sin PIN -> 401 Unauthorized
         res_rev_no_pin = self.client.post("/api/review/1", json={"rating": 3})
         self.assertEqual(res_rev_no_pin.status_code, 401)
 
-        # 4. POST /api/review/1 con PIN incorrecto -> 401 Unauthorized
+        # 6. POST /api/review/1 con PIN incorrecto -> 401 Unauthorized
         res_rev_wrong = self.client.post(
             "/api/review/1",
             json={"rating": 3},
             headers={"X-Web-Pin": "wrong"}
         )
         self.assertEqual(res_rev_wrong.status_code, 401)
+
+    def test_rate_limiting_brute_force_lockout(self):
+        from src.config import settings
+        settings.WEB_ACCESS_PIN = "secret123"
+
+        test_ip_headers = {"X-Forwarded-For": "198.51.100.5"}
+
+        # 5 intentos fallidos -> 401
+        for i in range(5):
+            res = self.client.get(
+                "/api/stats",
+                headers={"X-Web-Pin": f"bad_pin_{i}", **test_ip_headers}
+            )
+            self.assertEqual(res.status_code, 401)
+
+        # El 6to intento debe recibir 429 Too Many Requests
+        lockout_res = self.client.get(
+            "/api/stats",
+            headers={"X-Web-Pin": "bad_pin_6", **test_ip_headers}
+        )
+        self.assertEqual(lockout_res.status_code, 429)
+        self.assertIn("Demasiados intentos fallidos", lockout_res.json()["detail"])
+
+    def test_security_headers_middleware(self):
+        res = self.client.get("/api/health")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.headers.get("x-content-type-options"), "nosniff")
+        self.assertEqual(res.headers.get("x-frame-options"), "DENY")
+        self.assertEqual(res.headers.get("referrer-policy"), "strict-origin-when-cross-origin")
 
     def test_telegram_webhook_secret_cryptographic_verification(self):
         from src.config import settings
@@ -312,6 +354,20 @@ class TestCloudEndpoints(unittest.TestCase):
         for noise in ("Hola", "buenos días", "gracias", "ok", "?", "jaja"):
             with self.assertRaises(InvalidTermError):
                 enricher.enrich(noise, [])
+
+    def test_ai_enricher_max_length_guardrail(self):
+        from src.infrastructure.ai_enricher import GeminiEnricher, InvalidTermError
+        enricher = GeminiEnricher(api_key="dummy_key")
+
+        # Término > 120 caracteres -> InvalidTermError
+        with self.assertRaises(InvalidTermError) as cm_term:
+            enricher.enrich("A" * 121, [])
+        self.assertIn("120 caracteres", str(cm_term.exception))
+
+        # Target scope > 60 caracteres -> InvalidTermError
+        with self.assertRaises(InvalidTermError) as cm_scope:
+            enricher.enrich("REST", [], target_scope="B" * 61)
+        self.assertIn("60 caracteres", str(cm_scope.exception))
 
     def test_multi_scope_same_term_different_categories(self):
         c_arch = self.repo.get_or_create_category(

@@ -47,9 +47,19 @@ def get_service() -> GlossaryService:
             logger.error("Error inicializando GlossaryService: %s", e)
             raise HTTPException(
                 status_code=503,
-                detail=f"Base de datos no disponible o DATABASE_URL no configurada: {e}",
+                detail="Base de datos temporalmente no disponible.",
             )
     return _service_instance
+
+
+# ---------------------------------------------------------------- Middleware de Seguridad
+@app.middleware("http")
+async def add_security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
 
 
 # ---------------------------------------------------------------- Routers Modulares
