@@ -10,6 +10,8 @@ Sistema de arquitectura limpia para el estudio y retención a largo plazo de con
 glosario-srs/
 ├── data/
 │   └── DS-GlosarioTerminos.html # Archivo fuente original (INTACTO e inalterado)
+├── docs/
+│   └── security-audit.md        # Informe de auditoría Cloudflare Security Skill
 ├── scripts/
 │   └── seed_from_html.py        # Migración directa a PostgreSQL en la nube (DATABASE_URL)
 ├── src/
@@ -18,12 +20,13 @@ glosario-srs/
 │   │   └── srs_scheduler.py     # Algoritmo SM-2 puro (1=Olvidado, 2=Dudé, 3=Dominado)
 │   ├── infrastructure/
 │   │   ├── db_repository.py     # PostgreSQL Repository con Triggers de inmutabilidad (Supabase)
-│   │   └── ai_enricher.py       # Conector Gemini API con JSON estructurado y validación
+│   │   └── ai_enricher.py       # Conector Gemini API con guardrail y structured output
 │   ├── application/
 │   │   └── use_cases.py         # Casos de uso compartidos entre PWA, Webhook y Cron
 │   ├── interfaces/
-│   │   ├── api_server.py        # Servidor FastAPI + PWA móvil
+│   │   ├── api_server.py        # Servidor FastAPI + PWA móvil + Security Headers
 │   │   ├── webhook_routes.py    # POST /api/telegram/webhook (Serverless Telegram Bot)
+│   │   ├── web_routes.py        # Rutas PWA protegidas por PIN con Rate Limiting
 │   │   └── cron_routes.py       # POST /api/cron/trigger-srs (Recordatorios a las 08:30 y 20:00)
 │   ├── web/                     # Frontend PWA móvil/desktop (Guía Zoom, Compendio A4, Flashcards)
 │   │   ├── index.html
@@ -34,11 +37,31 @@ glosario-srs/
 │   │   └── sw.js
 │   └── bootstrap.py             # Composition root unificado (lee DATABASE_URL)
 ├── tests/
-│   └── test_all.py              # Suite de pruebas automatizadas (SM-2, Webhook, Cron, Security)
+│   └── test_all.py              # Suite de 14 pruebas automatizadas (SM-2, Rate-Limit, PIN, Cron, IA)
 ├── render.yaml                  # Blueprint para despliegue automático en Render.com
 ├── requirements.txt             # Dependencias ligeras serverless (psycopg2-binary, fastapi, httpx...)
 └── .env.example
 ```
+
+---
+
+## ✨ Características Principales
+
+1. **Interpretaciones 1:N por Ámbito / Disciplina:**
+   - Un mismo término (ej. *REST*, *Contrato*, *Proceso*) puede tener múltiples fichas independientes según el ámbito o nivel de zoom (*Arquitectura de Software* vs. *Programación de APIs* vs. *Derecho*).
+   - Botones interactivos en Telegram (`➕ Ámbito: [Nombre]`) para enriquecer perspectivas alternativas sugeridas por la IA.
+2. **Filtro Anti-Ruido y Prompt Canónico Multidisciplinar:**
+   - Filtro determinista contra saludos ("Hola", "Buenas") y charla casual.
+   - Grounding canónico contra fuentes cero de la industria y la academia (IEEE SWEBOK, ACM CCS, GoF, Martin Kleppmann, Robert C. Martin, Eric Evans, doctrina jurídica).
+3. **Control de Carga Cognitiva SRS (Anti-Agobio):**
+   - Recordatorios con sesiones de máximo **5 tarjetas** para evitar fatiga mental ante grandes compendios.
+4. **Endurecimiento de Seguridad (Cloudflare Security Audit):**
+   - Acceso con PIN (`WEB_ACCESS_PIN`) para lectura y escritura en la PWA.
+   - Rate limiting por IP (máx. 5 intentos fallidos en 60s $\rightarrow$ bloqueo de 5 minutos con `HTTP 429`).
+   - Verificación de credenciales en tiempo constante (`secrets.compare_digest`).
+   - Encabezados HTTP de seguridad: `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`.
+   - Límite de 120 caracteres en términos para prevenir prompt injection y context stuffing.
+   - Informe técnico completo en [`docs/security-audit.md`](docs/security-audit.md).
 
 ---
 
