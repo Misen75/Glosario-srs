@@ -47,9 +47,12 @@ CREATE TABLE IF NOT EXISTS terms (
     technical_definition     TEXT NOT NULL,
     daily_analogy            TEXT NOT NULL,
     tradeoff_when_not_to_use TEXT,
+    other_scopes             TEXT[] NOT NULL DEFAULT '{}',
     created_at               TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_terms_category_term UNIQUE (category_id, term)
 );
+
+ALTER TABLE terms ADD COLUMN IF NOT EXISTS other_scopes TEXT[] NOT NULL DEFAULT '{}';
 
 CREATE TABLE IF NOT EXISTS srs_state (
     term_id          INTEGER PRIMARY KEY REFERENCES terms(id),
@@ -102,7 +105,8 @@ BEGIN
        OR NEW.created_at <> OLD.created_at
        OR NEW.technical_definition <> OLD.technical_definition
        OR NEW.daily_analogy <> OLD.daily_analogy
-       OR (OLD.tradeoff_when_not_to_use IS NOT NULL AND NEW.tradeoff_when_not_to_use IS DISTINCT FROM OLD.tradeoff_when_not_to_use) THEN
+       OR (OLD.tradeoff_when_not_to_use IS NOT NULL AND NEW.tradeoff_when_not_to_use IS DISTINCT FROM OLD.tradeoff_when_not_to_use)
+       OR (OLD.other_scopes IS NOT NULL AND cardinality(OLD.other_scopes) > 0 AND NEW.other_scopes IS DISTINCT FROM OLD.other_scopes) THEN
         RAISE EXCEPTION 'terms es inmutable: no se permite sobrescribir datos existentes';
     END IF;
     RETURN NEW;
@@ -188,6 +192,7 @@ class PostgresGlossaryRepository:
         c_at = r["created_at"]
         if isinstance(c_at, str):
             c_at = datetime.fromisoformat(c_at)
+        raw_scopes = r.get("other_scopes") or ()
         return Term(
             id=r["id"],
             category_id=r["category_id"],
@@ -196,6 +201,7 @@ class PostgresGlossaryRepository:
             daily_analogy=r["daily_analogy"],
             tradeoff_when_not_to_use=r["tradeoff_when_not_to_use"],
             created_at=c_at,
+            other_scopes=tuple(raw_scopes),
         )
 
     @staticmethod
@@ -308,15 +314,16 @@ class PostgresGlossaryRepository:
 
         today_date = today or date.today()
         tradeoff = draft.tradeoff_when_not_to_use.strip() if draft.tradeoff_when_not_to_use else None
+        scopes_list = [s.strip() for s in (draft.other_scopes or ()) if s and s.strip()]
 
         with self._connect() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute(
-                    """INSERT INTO terms (category_id, term, technical_definition, daily_analogy, tradeoff_when_not_to_use)
-                       VALUES (%s, %s, %s, %s, %s)
+                    """INSERT INTO terms (category_id, term, technical_definition, daily_analogy, tradeoff_when_not_to_use, other_scopes)
+                       VALUES (%s, %s, %s, %s, %s, %s)
                        RETURNING *""",
                     (category_id, draft.term.strip(), draft.technical_definition.strip(),
-                     draft.daily_analogy.strip(), tradeoff),
+                     draft.daily_analogy.strip(), tradeoff, scopes_list),
                 )
                 t_row = cur.fetchone()
                 term_id = t_row["id"]
@@ -336,6 +343,18 @@ class PostgresGlossaryRepository:
                        SET tradeoff_when_not_to_use = %s
                        WHERE id = %s AND tradeoff_when_not_to_use IS NULL""",
                     (tradeoff.strip(), term_id),
+                )
+                return cur.rowcount == 1
+
+    def fill_missing_scopes(self, term_id: int, scopes: list[str] | tuple[str, ...]) -> bool:
+        clean_scopes = [s.strip() for s in scopes if s and s.strip()]
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE terms
+                       SET other_scopes = %s
+                       WHERE id = %s AND (other_scopes IS NULL OR cardinality(other_scopes) = 0)""",
+                    (clean_scopes, term_id),
                 )
                 return cur.rowcount == 1
 
@@ -375,14 +394,55 @@ class PostgresGlossaryRepository:
                      s.last_reviewed_at, s.term_id),
                 )
 
-    def list_due_term_ids(self, today: date, limit: Optional[int] = None) -> list[int]:
-        query = """SELECT term_id FROM srs_state
-                   WHERE next_review_date <= %s
-                   ORDER BY CASE WHEN last_reviewed_at IS NOT NULL AND DATE(last_reviewed_at) = %s THEN 1 ELSE 0 END ASC,
-                            next_review_date ASC,
-                            ease_factor ASC,
-                            term_id ASC"""
-        params = [today, today]
+    def get_active_focus_category_id(self, today: date) -> Optional[int]:
+        """Encuentra la primera categoría (ordenada por área y nivel de zoom) que aún tiene tarjetas por dominar hoy."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT c.id
+                       FROM categories c
+                       JOIN terms t ON t.category_id = c.id
+                       JOIN srs_state s ON s.term_id = t.id
+                       WHERE s.next_review_date <= %s
+                       ORDER BY c.macro_area ASC, c.zoom_level ASC, c.id ASC
+                       LIMIT 1""",
+                    (today,),
+                )
+                row = cur.fetchone()
+        return row[0] if row else None
+
+    def list_due_term_ids(
+        self,
+        today: date,
+        limit: Optional[int] = None,
+        focused: bool = True,
+        category_id: Optional[int] = None,
+    ) -> list[int]:
+        target_cat_id = category_id
+        if focused and target_cat_id is None:
+            target_cat_id = self.get_active_focus_category_id(today)
+            if target_cat_id is None:
+                return []
+
+        if target_cat_id is not None:
+            query = """SELECT s.term_id
+                       FROM srs_state s
+                       JOIN terms t ON t.id = s.term_id
+                       WHERE s.next_review_date <= %s AND t.category_id = %s
+                       ORDER BY CASE WHEN s.last_reviewed_at IS NOT NULL AND DATE(s.last_reviewed_at) = %s THEN 1 ELSE 0 END ASC,
+                                s.next_review_date ASC,
+                                s.ease_factor ASC,
+                                s.term_id ASC"""
+            params = [today, target_cat_id, today]
+        else:
+            query = """SELECT term_id FROM srs_state
+                       WHERE next_review_date <= %s
+                       ORDER BY CASE WHEN last_reviewed_at IS NOT NULL AND DATE(last_reviewed_at) = %s THEN 1 ELSE 0 END ASC,
+                                next_review_date ASC,
+                                ease_factor ASC,
+                                term_id ASC"""
+            params = [today, today]
+
         if limit:
             query += " LIMIT %s"
             params.append(limit)
@@ -393,10 +453,19 @@ class PostgresGlossaryRepository:
                 rows = cur.fetchall()
         return [r[0] for r in rows]
 
-    def count_due(self, today: date) -> int:
+    def count_due(self, today: date, category_id: Optional[int] = None) -> int:
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM srs_state WHERE next_review_date <= %s", (today,))
+                if category_id is not None:
+                    cur.execute(
+                        """SELECT COUNT(*)
+                           FROM srs_state s
+                           JOIN terms t ON t.id = s.term_id
+                           WHERE s.next_review_date <= %s AND t.category_id = %s""",
+                        (today, category_id),
+                    )
+                else:
+                    cur.execute("SELECT COUNT(*) FROM srs_state WHERE next_review_date <= %s", (today,))
                 return cur.fetchone()[0]
 
     # ---------------------------------------------------------- Review Log

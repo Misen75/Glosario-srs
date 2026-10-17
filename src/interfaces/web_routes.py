@@ -123,6 +123,7 @@ def _card_dto(card: TermCard, service: GlossaryService, with_preview: bool = Fal
         "technical_definition": t.technical_definition,
         "daily_analogy": t.daily_analogy,
         "tradeoff_when_not_to_use": t.tradeoff_when_not_to_use,
+        "other_scopes": list(getattr(t, "other_scopes", ()) or ()),
         "created_at": t.created_at.isoformat() if t.created_at else None,
         "srs": {
             "interval_days": s.interval_days,
@@ -205,8 +206,10 @@ def init_web_routes(service_factory):
         require_web_pin(request, _pin)
         service: GlossaryService = service_factory()
         cards = service.due_cards(limit=limit)
+        focus = service.active_focus()
         return {
             "count": service.count_due(),
+            "active_focus": focus,
             "cards": [_card_dto(c, service, with_preview=True) for c in cards],
         }
 
@@ -264,6 +267,7 @@ def init_web_routes(service_factory):
             "repetitions": s.repetitions,
             "next_review_date": s.next_review_date.isoformat(),
             "due_remaining": service.count_due(),
+            "active_focus": service.active_focus(),
         }
 
     return router

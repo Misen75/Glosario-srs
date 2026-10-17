@@ -65,6 +65,7 @@ class Term:
     daily_analogy: str
     tradeoff_when_not_to_use: Optional[str]
     created_at: Optional[datetime] = None
+    other_scopes: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)

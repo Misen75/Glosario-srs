@@ -110,20 +110,21 @@ class GlossaryService:
         if existing_terms and not scope:
             cards = tuple(self._card(t) for t in existing_terms)
             occupied_cats = {c.category.name.casefold() for c in cards}
-            default_scopes = tuple(
-                s for s in (
-                    "Programación e Implementación",
-                    "Diseño de Software",
-                    "Arquitectura de Sistemas",
-                    "Bases de Datos y Persistencia",
-                )
-                if s.casefold() not in occupied_cats
-            )[:3]
+            persisted_scopes = [s for t in existing_terms for s in (t.other_scopes or ())]
+            candidate_scopes = persisted_scopes or [
+                "Programación e Implementación",
+                "Diseño de Software",
+                "Arquitectura de Sistemas",
+                "Bases de Datos y Persistencia",
+            ]
+            available_scopes = tuple(
+                dict.fromkeys(s for s in candidate_scopes if s.casefold() not in occupied_cats)
+            )
             return CaptureResult(
                 card=cards[0],
                 created=False,
                 existing_cards=cards,
-                suggested_scopes=default_scopes,
+                suggested_scopes=available_scopes,
             )
 
         if not self.enricher or not self.enricher.available:
@@ -174,7 +175,7 @@ class GlossaryService:
         occupied_names = {c.category.name.casefold() for c in all_now_cards}
         filtered_scopes = tuple(
             s for s in draft.other_scopes if s.casefold() not in occupied_names
-        )[:4]
+        )
 
         return CaptureResult(
             card=self._card(term),
@@ -185,12 +186,53 @@ class GlossaryService:
         )
 
     # ---------------------------------------------------------------- SRS
-    def due_cards(self, today: Optional[date] = None, limit: Optional[int] = None) -> list[TermCard]:
+    def active_focus(self, today: Optional[date] = None) -> Optional[dict]:
+        """Devuelve el Área y Categoría específica en la que se concentra el estudio actual hasta dominarla."""
         today = today or date.today()
-        return [c for tid in self.repo.list_due_term_ids(today, limit) if (c := self.get_card(tid))]
+        cat_id = None
+        if hasattr(self.repo, "get_active_focus_category_id"):
+            cat_id = self.repo.get_active_focus_category_id(today)
+        else:
+            due_ids = self.repo.list_due_term_ids(today, limit=1)
+            if due_ids:
+                t = self.repo.get_term(due_ids[0])
+                cat_id = t.category_id if t else None
+        if cat_id is None:
+            return None
+        cat = self.repo.get_category(cat_id)
+        if not cat:
+            return None
+        cat_due = self.count_due(today, category_id=cat_id)
+        cat_total = len(self.repo.list_terms(category_id=cat_id))
+        return {
+            "category_id": cat.id,
+            "category": cat.name,
+            "macro_area": cat.macro_area,
+            "zoom_level": int(cat.zoom_level),
+            "zoom_label": cat.zoom_level.label,
+            "category_due": cat_due,
+            "category_total": cat_total,
+        }
 
-    def count_due(self, today: Optional[date] = None) -> int:
-        return self.repo.count_due(today or date.today())
+    def due_cards(
+        self,
+        today: Optional[date] = None,
+        limit: Optional[int] = None,
+        focused: bool = True,
+    ) -> list[TermCard]:
+        today = today or date.today()
+        try:
+            due_ids = self.repo.list_due_term_ids(today, limit=limit, focused=focused)
+        except TypeError:
+            due_ids = self.repo.list_due_term_ids(today, limit=limit)
+        return [c for tid in due_ids if (c := self.get_card(tid))]
+
+    def count_due(self, today: Optional[date] = None, category_id: Optional[int] = None) -> int:
+        today = today or date.today()
+        try:
+            return self.repo.count_due(today, category_id=category_id)
+        except TypeError:
+            return self.repo.count_due(today)
 
     def preview_intervals(self, srs: SRSState, now: Optional[datetime] = None) -> dict[Rating, int]:
         return srs_scheduler.preview(srs, now or datetime.now())
@@ -217,4 +259,5 @@ class GlossaryService:
             "due_today": self.repo.count_due(today),
             "reviewed_today": self.repo.count_reviews_on(today),
             "ai_available": bool(self.enricher and self.enricher.available),
+            "active_focus": self.active_focus(today),
         }

@@ -353,7 +353,8 @@
     const filtered = state.terms.filter(t => {
       if (filterCatId && t.category_id !== filterCatId) return false;
       if (!query) return true;
-      const haystack = normalizeText(`${t.term} ${t.category} ${t.technical_definition} ${t.daily_analogy} ${t.tradeoff_when_not_to_use || ""}`);
+      const scopesText = Array.isArray(t.other_scopes) ? t.other_scopes.join(" ") : "";
+      const haystack = normalizeText(`${t.term} ${t.category} ${t.technical_definition} ${t.daily_analogy} ${t.tradeoff_when_not_to_use || ""} ${scopesText}`);
       return haystack.includes(query);
     });
 
@@ -364,15 +365,20 @@
       return;
     }
 
-    dom.termsBody.innerHTML = filtered.map(t => `
+    dom.termsBody.innerHTML = filtered.map(t => {
+      const scopes = Array.isArray(t.other_scopes) && t.other_scopes.length > 0
+        ? `<div style="margin-top:6px; font-weight:normal; font-size:10.5px; color:#64748b;">🌐 <i>Otros ámbitos:</i> ${t.other_scopes.map(s => escapeHtml(s)).join(" · ")}</div>`
+        : "";
+      return `
       <tr>
         <td class="cat">${escapeHtml(t.category)}</td>
-        <td class="term">${escapeHtml(t.term)}</td>
+        <td class="term">${escapeHtml(t.term)}${scopes}</td>
         <td class="def">${escapeHtml(t.technical_definition)}</td>
         <td class="analog">${escapeHtml(t.daily_analogy)}</td>
         <td class="tradeoff">${escapeHtml(t.tradeoff_when_not_to_use || "—")}</td>
       </tr>
-    `).join("");
+    `;
+    }).join("");
   }
 
   dom.search.addEventListener("input", renderTermsTable);
@@ -452,11 +458,16 @@
       if (!res.ok) return;
       const data = await res.json();
       state.dueCards = data.cards || [];
+      state.activeFocus = data.active_focus || null;
       state.currentDueIndex = 0;
       
       const count = data.count || state.dueCards.length;
       dom.dueNum.textContent = count;
-      dom.dueLabel.textContent = count === 1 ? "término por repasar hoy" : "términos por repasar hoy";
+      if (state.activeFocus) {
+        dom.dueLabel.textContent = `pendientes hoy · 🎯 Enfoque actual: ${state.activeFocus.category} (${state.activeFocus.category_due} por dominar en esta categoría)`;
+      } else {
+        dom.dueLabel.textContent = count === 1 ? "término por repasar hoy" : "términos por repasar hoy";
+      }
       
       if (count > 0) {
         dom.dueBadge.textContent = count;
@@ -487,11 +498,14 @@
     dom.ratingPanel.hidden = true;
     dom.fcHint.hidden = false;
 
-    dom.fcCategory.textContent = card.category;
+    dom.fcCategory.textContent = `${card.macro_area} · ${card.category}`;
     dom.fcTerm.textContent = card.term;
     dom.fcDef.textContent = card.technical_definition;
     dom.fcAnalog.textContent = card.daily_analogy;
-    dom.fcTradeoff.textContent = card.tradeoff_when_not_to_use || "—";
+    const scopesSuffix = Array.isArray(card.other_scopes) && card.other_scopes.length > 0
+      ? `\n\n🌐 Otros ámbitos de este término: ${card.other_scopes.join(" · ")}`
+      : "";
+    dom.fcTradeoff.textContent = (card.tradeoff_when_not_to_use || "—") + scopesSuffix;
 
     // Previsualización de intervalos en los botones
     if (card.preview) {
@@ -550,18 +564,21 @@
       }
 
       const data = await res.json();
-      showToast(`Guardado: ${rating === 1 ? "Olvidado" : rating === 2 ? "Dudé" : "Dominado"}`);
-      
-      // Si fue "Olvidado" (0 días), lo volvemos a encolar al final de la sesión de hoy
-      if (rating === 1) {
-        state.dueCards.push(card);
-      }
-      
-      state.currentDueIndex++;
-      if (state.currentDueIndex < state.dueCards.length) {
-        renderCurrentCard();
-      } else {
+      if (data.active_focus && data.active_focus.category_id !== card.category_id) {
+        showToast(`🏆 ¡Categoría "${card.category}" dominada! Pasando a "${data.active_focus.category}"`, 4500);
         await loadDueCards();
+      } else {
+        showToast(`Guardado: ${rating === 1 ? "Olvidado" : rating === 2 ? "Dudé" : "Dominado"}`);
+        // Si fue "Olvidado" (0 días), lo volvemos a encolar al final de la sesión de esta categoría
+        if (rating === 1) {
+          state.dueCards.push(card);
+        }
+        state.currentDueIndex++;
+        if (state.currentDueIndex < state.dueCards.length) {
+          renderCurrentCard();
+        } else {
+          await loadDueCards();
+        }
       }
       
       // Actualizar stats

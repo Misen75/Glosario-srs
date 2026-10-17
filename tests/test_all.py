@@ -130,6 +130,7 @@ class InMemoryRepository:
             daily_analogy=draft.daily_analogy,
             tradeoff_when_not_to_use=draft.tradeoff_when_not_to_use,
             created_at=datetime.now(),
+            other_scopes=tuple(draft.other_scopes or ()),
         )
         self.terms[tid] = term
         self.srs_states[tid] = SRSState(term_id=tid, next_review_date=today or date.today())
@@ -142,7 +143,8 @@ class InMemoryRepository:
             self.terms[term_id] = Term(
                 id=t.id, category_id=t.category_id, term=t.term,
                 technical_definition=t.technical_definition, daily_analogy=t.daily_analogy,
-                tradeoff_when_not_to_use=tradeoff, created_at=t.created_at
+                tradeoff_when_not_to_use=tradeoff, created_at=t.created_at,
+                other_scopes=t.other_scopes,
             )
             return True
         return False
@@ -159,7 +161,30 @@ class InMemoryRepository:
     def save_srs_state(self, s: SRSState):
         self.srs_states[s.term_id] = s
 
-    def list_due_term_ids(self, today: date, limit: int | None = None) -> list[int]:
+    def get_active_focus_category_id(self, today: date) -> int | None:
+        ordered_cats = sorted(
+            self.categories.values(),
+            key=lambda c: (c.macro_area, int(c.zoom_level), c.id),
+        )
+        for c in ordered_cats:
+            for t in self.terms.values():
+                if t.category_id == c.id and self.srs_states[t.id].next_review_date <= today:
+                    return c.id
+        return None
+
+    def list_due_term_ids(
+        self,
+        today: date,
+        limit: int | None = None,
+        focused: bool = True,
+        category_id: int | None = None,
+    ) -> list[int]:
+        target_cat_id = category_id
+        if focused and target_cat_id is None:
+            target_cat_id = self.get_active_focus_category_id(today)
+            if target_cat_id is None:
+                return []
+
         def sort_key(item):
             tid, s = item
             reviewed_today = 1 if (s.last_reviewed_at and s.last_reviewed_at.date() == today) else 0
@@ -167,12 +192,15 @@ class InMemoryRepository:
 
         due = [
             tid for tid, s in sorted(self.srs_states.items(), key=sort_key)
-            if s.next_review_date <= today
+            if s.next_review_date <= today and (target_cat_id is None or self.terms[tid].category_id == target_cat_id)
         ]
         return due[:limit] if limit else due
 
-    def count_due(self, today: date) -> int:
-        return sum(1 for s in self.srs_states.values() if s.next_review_date <= today)
+    def count_due(self, today: date, category_id: int | None = None) -> int:
+        return sum(
+            1 for tid, s in self.srs_states.items()
+            if s.next_review_date <= today and (category_id is None or self.terms[tid].category_id == category_id)
+        )
 
     def append_review_log(self, log: ReviewLog):
         self.review_logs.append(log)
@@ -482,6 +510,51 @@ class TestCloudEndpoints(unittest.TestCase):
         r2 = self.client.post("/api/cron/trigger-srs", headers={"CRON_SECRET": "secret_cron_cooldown"})
         self.assertEqual(r2.status_code, 200)
         self.assertTrue(r2.json().get("cooldown"))
+
+    def test_focused_category_progression_until_mastered(self):
+        today = date(2026, 10, 17)
+        now = datetime(2026, 10, 17, 10, 0, 0)
+        cat_a = self.repo.get_or_create_category("Ingeniería de Software", "1. Principios", "Base", ZoomLevel.MICRO)
+        cat_b = self.repo.get_or_create_category("Ingeniería de Software", "2. Arquitectura", "Macro", ZoomLevel.MACRO)
+
+        t_a1 = self.repo.add_term(
+            cat_a.id,
+            NewTermDraft("Cohesión", "Ingeniería de Software", "1. Principios", "Base", ZoomLevel.MICRO, "def", "analog", "trade", ("Psicología", "Física")),
+            today=today,
+        )
+        t_a2 = self.repo.add_term(
+            cat_a.id,
+            NewTermDraft("Acoplamiento", "Ingeniería de Software", "1. Principios", "Base", ZoomLevel.MICRO, "def", "analog", "trade"),
+            today=today,
+        )
+        t_b1 = self.repo.add_term(
+            cat_b.id,
+            NewTermDraft("Microservicios", "Ingeniería de Software", "2. Arquitectura", "Macro", ZoomLevel.MACRO, "def", "analog", "trade"),
+            today=today,
+        )
+
+        # 1. El enfoque inicial debe estar exclusivamente en cat_a (Principios)
+        focus_1 = self.service.active_focus(today=today)
+        self.assertEqual(focus_1["category_id"], cat_a.id)
+        self.assertEqual(focus_1["category_due"], 2)
+
+        due_1 = self.service.due_cards(today=today, limit=5)
+        self.assertEqual([c.term.id for c in due_1], [t_a1.id, t_a2.id])
+        self.assertEqual(due_1[0].term.other_scopes, ("Psicología", "Física"))
+
+        # 2. Si olvida t_a1, sigue enfocado en cat_a hasta dominarla
+        self.service.review(t_a1.id, Rating.FORGOTTEN, now=now)
+        self.assertEqual(self.service.active_focus(today=today)["category_id"], cat_a.id)
+
+        # 3. Domina t_a2 y luego domina t_a1 -> cat_a queda 100% dominada hoy
+        self.service.review(t_a2.id, Rating.MASTERED, now=now)
+        self.service.review(t_a1.id, Rating.MASTERED, now=now)
+
+        # 4. Automáticamente el enfoque cambia a cat_b (2. Arquitectura)
+        focus_2 = self.service.active_focus(today=today)
+        self.assertEqual(focus_2["category_id"], cat_b.id)
+        due_2 = self.service.due_cards(today=today, limit=5)
+        self.assertEqual([c.term.id for c in due_2], [t_b1.id])
 
 
 if __name__ == "__main__":

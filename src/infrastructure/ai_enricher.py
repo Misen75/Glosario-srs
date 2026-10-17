@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from src.domain.models import Category, NewTermDraft, Term, ZoomLevel
 
 DEFAULT_MODEL = "gemini-2.5-flash"
-DEF_MIN_WORDS, DEF_MAX_WORDS = 40, 65
+DEF_MIN_WORDS = 25
 MAX_ATTEMPTS = 3
 
 
@@ -59,30 +59,30 @@ class _AIFicha(BaseModel):
     other_valid_scopes: list[str] = Field(
         default_factory=list,
         description=(
-            "Lista de otros ámbitos, sub-ramas o niveles de abstracción verídicos donde este mismo término "
-            "tiene una interpretación distinta (ej. ['Programación de APIs', 'Diseño de Sistemas Distribuidos', 'Derecho Procesal']). "
-            "Máximo 4 ámbitos cortos (máx 32 caracteres cada uno). Vacío si solo tiene una única interpretación universal."
+            "Lista completa y sin límite artificial de todos los demás ámbitos, sub-ramas, disciplinas o niveles de abstracción "
+            "verídicos donde este mismo término tiene una interpretación distinta (ej. ['Programación de APIs', 'Diseño de Sistemas Distribuidos', "
+            "'Redes de Computadoras', 'Seguridad Informática', 'Derecho Procesal']). Vacío solo si tiene una única interpretación universal."
         ),
     )
 
 
 _SYSTEM = """Eres un Arquitecto de Conocimiento Canónico y redactor experto multidisciplinar (Ingeniería de Software, Ciencias de la Computación, Derecho, Economía y Ciencias Exactas) que mantiene un glosario de estudio riguroso en español.
-Tu tarea: dado el nombre de un término (y opcionalmente un ámbito/perspectiva objetivo), validar si es un concepto real y producir su ficha en JSON siguiendo estándares oficiales de la industria o academia.
+Tu tarea: dado el nombre de un término (y opcionalmente un ámbito/perspectiva objetivo), validar si es un concepto real y producir su ficha en JSON siguiendo estrictamente los estándares oficiales de la industria o academia.
 
 Reglas de validación y estándares:
 0. FILTRO ANTI-BASURA (is_valid_concept): Si el usuario envía un saludo ("Hola", "Buenos días"), una frase conversacional ("¿cómo estás?", "gracias"), números sueltos o texto sin valor conceptual, marca is_valid_concept=false, explica en rejection_reason que eres un glosario conceptual y rellena el resto con valores neutros breves.
-1. ESTÁNDARES CANÓNICOS: Valida el significado contra las fuentes cero de la disciplina:
+1. ESTÁNDARES CANÓNICOS (FUENTES CERO): Valida el significado y utiliza la terminología técnica/académica exacta de las fuentes cero de la disciplina:
    - En Software/Computación: IEEE SWEBOK, ACM CCS, GoF (Design Patterns), Martin Kleppmann (DDIA), Robert C. Martin (Clean Architecture), Eric Evans (DDD), Roy Fielding (REST), RFCs/ISO.
    - En Derecho: Doctrina jurídica estándar, Teoría General del Derecho, Derecho Constitucional, Civil, Procesal, Penal o Administrativo.
    - En otras disciplinas: Nomenclatura Internacional de la UNESCO / CDU.
-2. MÚLTIPLES INTERPRETACIONES POR ÁMBITO (1:N):
-   - Un mismo término (ej. "REST", "Proceso", "Interfaz", "Contrato", "Estado") puede tener distintas interpretaciones según el ámbito o nivel de zoom (ej. en Arquitectura/Diseño de Software vs. en Programación/Implementación de Código vs. en Derecho).
-   - Mantén `canonical_term` con el nombre limpio del término (ej. "REST (Representational State Transfer)" o "Contrato"), porque la columna `category` y `macro_area` ya identifican bajo qué ámbito se está interpretando.
+2. MÚLTIPLES INTERPRETACIONES POR ÁMBITO (1:N SIN LÍMITES):
+   - Un mismo término (ej. "REST", "Proceso", "Interfaz", "Contrato", "Estado", "Proxy") puede tener distintas interpretaciones según el ámbito o nivel de zoom.
+   - Mantén `canonical_term` con el nombre limpio del término, porque `category` y `macro_area` ya identifican bajo qué ámbito se está interpretando.
    - Si se solicita un ÁMBITO OBJETIVO específico, redacta la definición, analogía y trade-off 100% desde ese ámbito y ubícalo en la categoría que corresponda a ese ámbito (nunca en las categorías excluidas).
-   - En `other_valid_scopes`, enumera hasta 4 otros ámbitos reales donde este mismo término tenga otra interpretación valiosa para estudiar.
-3. technical_definition: entre 40 y 65 palabras. Rigurosa y validada. Empieza con un sustantivo clasificador ("Estilo arquitectónico que...", "Convención de programación que...", "Principio jurídico que...", "Mecanismo que..."). Explica QUÉ es en ese ámbito, PARA QUÉ sirve y qué problema resuelve. Sin markdown, sin viñetas, en prosa.
-4. daily_analogy: máximo 2 oraciones. Analogía física o cotidiana directa y memorable. Formato preferido: "Objeto o escena concreta: explicación de por qué se parece."
-5. tradeoff_when_not_to_use: exactamente 1 oración con el límite, excepción, costo oculto o escenario en que NO aplica o resulta contraproducente.
+   - En `other_valid_scopes`, enumera TODOS los demás ámbitos, sub-disciplinas o áreas reales donde este mismo término tenga otra interpretación valiosa para estudiar, sin omitir ninguno.
+3. technical_definition: SIN LÍMITE MÁXIMO DE PALABRAS. No sacrifiques precisión por brevedad: emplea toda la extensión y terminología formal necesaria para que la definición sea 100% rigurosa según los estándares establecidos. Empieza con el sustantivo ontológico clasificador exacto ("Estilo arquitectónico que...", "Patrón de diseño estructural que...", "Principio jurídico que...", "Mecanismo de concurrencia que..."). Explica con rigor técnico QUÉ es en ese ámbito, cómo opera su mecanismo/estructura formal, PARA QUÉ sirve y qué problema resuelve. Sin markdown, sin viñetas, en prosa.
+4. daily_analogy: Analogía física o cotidiana directa, clara y memorable que mapee con fidelidad el mecanismo del concepto. Formato preferido: "Objeto o escena concreta: explicación de por qué se parece."
+5. tradeoff_when_not_to_use: Explica con precisión técnica el límite, excepción, costo oculto, antipatrón o escenario en que NO aplica o resulta contraproducente.
 6. Categoría: reutiliza el nombre y la macro-área de una categoría existente SOLO si corresponde exactamente al ámbito que estás redactando y no está en la lista de categorías excluidas. De lo contrario, crea una nueva categoría específica para ese ámbito (is_new_category=true).
 7. zoom_level: 1=Micro (código/implementación/artículo), 2=Medio (módulo/patrón/contrato), 3=Macro (arquitectura/sistema/rama), 4=Infraestructura/Fundamentos/Doctrina.
 8. Español neutro. Conserva en inglés o latín los términos técnicos/jurídicos consagrados cuando corresponda.
@@ -167,12 +167,12 @@ class GeminiEnricher:
             return []
         p = []
         n = _word_count(f.technical_definition)
-        if not DEF_MIN_WORDS <= n <= DEF_MAX_WORDS:
-            p.append(f"technical_definition tiene {n} palabras; debe tener entre {DEF_MIN_WORDS} y {DEF_MAX_WORDS}.")
-        if _sentence_count(f.daily_analogy) > 2:
-            p.append("daily_analogy debe tener como máximo 2 oraciones.")
-        if _sentence_count(f.tradeoff_when_not_to_use) > 1:
-            p.append("tradeoff_when_not_to_use debe ser exactamente 1 oración.")
+        if n < DEF_MIN_WORDS:
+            p.append(f"technical_definition es demasiado breve ({n} palabras); desarrolla con rigor técnico (mínimo {DEF_MIN_WORDS} palabras).")
+        if not f.daily_analogy.strip():
+            p.append("daily_analogy es obligatoria.")
+        if not f.tradeoff_when_not_to_use.strip():
+            p.append("tradeoff_when_not_to_use es obligatorio.")
         if f.zoom_level not in (1, 2, 3, 4):
             p.append("zoom_level debe ser 1, 2, 3 o 4.")
         if not f.category.strip() or not f.macro_area.strip():
@@ -257,7 +257,7 @@ class GeminiEnricher:
             macro, name = f.macro_area.strip(), f.category.strip()
             desc = f.category_description.strip() or f"Categoría de {macro}."
             zoom = ZoomLevel(min(4, max(1, f.zoom_level)))
-        scopes = tuple(s.strip()[:35] for s in (f.other_valid_scopes or []) if s and s.strip())[:4]
+        scopes = tuple(s.strip() for s in (f.other_valid_scopes or []) if s and s.strip())
         return NewTermDraft(
             term=f.canonical_term.strip(), macro_area=macro, category_name=name, category_description=desc,
             zoom_level=zoom, technical_definition=" ".join(f.technical_definition.split()),

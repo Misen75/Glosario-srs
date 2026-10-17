@@ -144,10 +144,18 @@ def escape_html(text: str) -> str:
     )
 
 
-def format_card_front(card: TermCard, remaining: int = 0, step: int = 1, session_limit: int = SESSION_CARD_LIMIT) -> str:
+def format_card_front(
+    card: TermCard,
+    remaining: int = 0,
+    step: int = 1,
+    session_limit: int = SESSION_CARD_LIMIT,
+    category_due: int = 0,
+) -> str:
     header = f"🧠 <b>ENTRENAMIENTO SRS (Tarjeta {step}/{session_limit} de la tanda)</b>"
+    if category_due > 0:
+        header += f"\n🎯 <i>Enfoque activo en esta categoría: quedan <b>{category_due}</b> para dominarla</i>"
     if remaining > 0:
-        header += f"\n📚 <i>Total pendientes hoy: <b>{remaining}</b></i>"
+        header += f"\n📚 <i>Total global pendientes hoy: <b>{remaining}</b></i>"
     zoom_badge = f"[Zoom {int(card.category.zoom_level)}: {card.category.zoom_level.label}]"
     return (
         f"{header}\n\n"
@@ -161,12 +169,18 @@ def format_card_front(card: TermCard, remaining: int = 0, step: int = 1, session
 
 def format_card_back(card: TermCard) -> str:
     tradeoff = card.term.tradeoff_when_not_to_use or "No especificado."
+    scopes = getattr(card.term, "other_scopes", ()) or ()
+    scopes_block = ""
+    if scopes:
+        scopes_str = ", ".join(escape_html(s) for s in scopes)
+        scopes_block = f"\n\n🌐 <b>Otros ámbitos del término:</b>\n<i>{scopes_str}</i>"
     return (
         f"📖 <b>{escape_html(card.term.term)}</b>\n"
         f"🏷️ <i>{escape_html(card.category.name)} (Zoom {int(card.category.zoom_level)})</i>\n\n"
         f"📋 <b>Definición Técnica:</b>\n{escape_html(card.term.technical_definition)}\n\n"
         f"💡 <b>Analogía Cotidiana:</b>\n{escape_html(card.term.daily_analogy)}\n\n"
         f"⚠️ <b>Cuándo NO usarlo (Trade-off):</b>\n{escape_html(tradeoff)}"
+        f"{scopes_block}"
     )
 
 
@@ -191,9 +205,12 @@ def format_captured_term(result) -> str:
         other_html = f"\n\n🗂️ <b>Otras interpretaciones ya registradas de «{escape_html(card.term.term)}»:</b>\n{items}"
 
     scopes_hint = ""
-    if getattr(result, "suggested_scopes", ()):
+    scopes = getattr(result, "suggested_scopes", ())
+    if scopes:
+        scopes_list_html = ", ".join(f"<code>{escape_html(s)}</code>" for s in scopes)
         scopes_hint = (
-            f"\n\n🔍 <i>¿Deseas agregar la interpretación de <b>{escape_html(card.term.term)}</b> en otro ámbito? "
+            f"\n\n🌐 <b>Ámbitos alternativos identificados ({len(scopes)}):</b> {scopes_list_html}\n"
+            f"🔍 <i>¿Deseas agregar la interpretación de <b>{escape_html(card.term.term)}</b> en otro ámbito? "
             f"Toca un botón abajo o escribe <code>{escape_html(card.term.term)} (Ámbito)</code>:</i>"
         )
 
@@ -216,7 +233,7 @@ def keyboard_captured_term(result) -> Optional[dict]:
     if not scopes or not term_id:
         return None
     rows = []
-    for s in scopes[:4]:
+    for s in scopes:
         # Telegram callback_data max 64 bytes -> truncamos el nombre del scope de forma segura en UTF-8
         safe_scope = s.strip().replace(":", " ")
         while len(f"scope:{term_id}:{safe_scope}".encode("utf-8")) > 62:
@@ -267,7 +284,14 @@ async def send_next_review_card(service: GlossaryService, chat_id: int | str, st
 
     card = due[0]
     total_due = service.count_due()
-    text = format_card_front(card, remaining=total_due, step=step, session_limit=SESSION_CARD_LIMIT)
+    cat_due = service.count_due(category_id=card.category.id)
+    text = format_card_front(
+        card,
+        remaining=total_due,
+        step=step,
+        session_limit=SESSION_CARD_LIMIT,
+        category_due=cat_due,
+    )
     await send_message(
         chat_id=chat_id,
         text=text,
@@ -337,6 +361,7 @@ async def process_telegram_update(payload: dict, service: GlossaryService):
             step = int(parts[3]) if len(parts) > 3 else 1
 
             card = service.get_card(term_id)
+            prev_cat = card.category if card else None
             new_state = service.review(term_id, rating, datetime.now())
 
             rating_labels = {
@@ -351,6 +376,14 @@ async def process_telegram_update(payload: dict, service: GlossaryService):
                 f"📅 Próximo repaso: <b>{new_state.next_review_date.isoformat()}</b> "
                 f"(en {new_state.interval_days} días · EF: {new_state.ease_factor:.2f})\n"
             )
+
+            next_focus = service.active_focus()
+            if prev_cat and next_focus and next_focus["category_id"] != prev_cat.id:
+                summary += (
+                    f"\n🏆 <b>¡Categoría «{escape_html(prev_cat.name)}» dominada hoy!</b>\n"
+                    f"➡️ Cambiando de enfoque a: <b>{escape_html(next_focus['macro_area'])} · {escape_html(next_focus['category'])}</b>\n"
+                )
+
             await edit_message_text(chat_id=chat_id, message_id=message_id, text=summary)
 
             # Verificar si se alcanzó el tope saludable de la tanda (5 tarjetas)

@@ -1,5 +1,5 @@
 // Service Worker para Glosario SRS (PWA)
-const CACHE_NAME = "glosario-srs-v2";
+const CACHE_NAME = "glosario-srs-v3";
 const STATIC_ASSETS = [
   "/",
   "/index.html",
