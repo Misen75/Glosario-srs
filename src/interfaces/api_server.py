@@ -59,6 +59,8 @@ async def add_security_headers(request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    if request.url.path in ("/", "/index.html", "/app.js", "/styles.css", "/sw.js"):
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
     return response
 
 

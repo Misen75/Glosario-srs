@@ -140,43 +140,53 @@
       form.addEventListener("submit", onSubmit);
       cancelBtn.addEventListener("click", onCancel);
 
-      dlg.showModal();
+      if (!dlg.open) {
+        dlg.showModal();
+      }
       input.focus();
     });
   }
 
   let activePinPromise = null;
 
+  function requestPinModal(errMsg = "") {
+    if (!activePinPromise) {
+      activePinPromise = promptPin(errMsg).finally(() => {
+        activePinPromise = null;
+      });
+    }
+    return activePinPromise;
+  }
+
   async function ensurePin(errMsg = "") {
     let pin = getSavedPin();
     if (!pin) {
-      if (!activePinPromise) {
-        activePinPromise = promptPin(errMsg).finally(() => {
-          activePinPromise = null;
-        });
-      }
-      pin = await activePinPromise;
+      pin = await requestPinModal(errMsg);
     }
     return pin;
   }
 
   async function fetchWithPin(url, options = {}) {
-    let pin = await ensurePin();
-    if (!pin) {
+    let usedPin = await ensurePin();
+    if (!usedPin) {
       throw new Error("Se requiere PIN para acceder al sistema.");
     }
     const headers = {
       ...(options.headers || {}),
-      "X-Web-Pin": pin,
+      "X-Web-Pin": usedPin,
     };
     let res = await fetch(url, { ...options, headers });
     if (res.status === 401) {
-      clearSavedPin();
-      pin = await promptPin("PIN incorrecto. Ingresa tu WEB_ACCESS_PIN:");
-      if (!pin) {
+      const currentSaved = getSavedPin();
+      let retryPin = (currentSaved && currentSaved !== usedPin) ? currentSaved : null;
+      if (!retryPin) {
+        clearSavedPin();
+        retryPin = await requestPinModal("PIN incorrecto. Ingresa tu WEB_ACCESS_PIN:");
+      }
+      if (!retryPin) {
         throw new Error("PIN no autorizado.");
       }
-      headers["X-Web-Pin"] = pin;
+      headers["X-Web-Pin"] = retryPin;
       res = await fetch(url, { ...options, headers });
     }
     return res;
@@ -208,12 +218,25 @@
     });
     if (viewName === "train") {
       loadDueCards();
+    } else if (state.terms.length === 0 || state.areas.length === 0) {
+      loadData();
+    } else if (viewName === "table") {
+      renderTermsTable();
     }
   }
 
   dom.tabs.forEach(tab => {
     tab.addEventListener("click", () => switchView(tab.dataset.view));
   });
+
+  async function fetchJsonWithPin(url, options = {}) {
+    const res = await fetchWithPin(url, options);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `Error HTTP ${res.status}`);
+    }
+    return data;
+  }
 
   // --- Carga de datos iniciales ---
   async function loadData() {
@@ -224,19 +247,20 @@
         return;
       }
 
-      const [areasRes, termsRes, statsRes] = await Promise.all([
-        fetchWithPin("/api/areas").then(r => r.json()),
-        fetchWithPin("/api/terms").then(r => r.json()),
-        fetchWithPin("/api/stats").then(r => r.json()),
+      // Primero validamos el PIN con la petición más ligera (/api/stats) para evitar colisiones paralelas de 401
+      const statsRes = await fetchJsonWithPin("/api/stats");
+      const [areasRes, termsRes] = await Promise.all([
+        fetchJsonWithPin("/api/areas"),
+        fetchJsonWithPin("/api/terms"),
       ]);
-      state.areas = areasRes;
-      state.terms = termsRes;
+      state.areas = Array.isArray(areasRes) ? areasRes : [];
+      state.terms = Array.isArray(termsRes) ? termsRes : [];
       state.stats = statsRes;
       
       // Flatten categories for fast lookup
       state.categories = [];
       state.areas.forEach(a => {
-        a.categories.forEach(c => state.categories.push(c));
+        (a.categories || []).forEach(c => state.categories.push(c));
       });
 
       renderZoomLegend();
@@ -247,7 +271,7 @@
       await loadDueCards();
     } catch (err) {
       console.error("Error cargando datos:", err);
-      showToast("Error conectando con el servidor");
+      showToast(err.message || "Error conectando con el servidor");
     }
   }
 
