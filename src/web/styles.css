@@ -233,6 +233,96 @@ p.subtitle {
   font-weight: 600;
 }
 
+.cat-card-focus {
+  border: 2px solid var(--primary);
+  background: linear-gradient(180deg, #eff6ff 0%, #ffffff 45%);
+}
+
+.focus-active-pill {
+  display: inline-block;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #1d4ed8;
+  background: #dbeafe;
+  padding: 2px 8px;
+  border-radius: 999px;
+  margin-bottom: 6px;
+}
+
+.mastery-box {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px dashed #e2e8f0;
+}
+
+.mastery-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 10.5px;
+  color: #475569;
+  margin-bottom: 5px;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.mastery-status {
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.mastery-pct {
+  color: #64748b;
+}
+
+.mastery-due-pill {
+  background: #fef3c7;
+  color: #92400e;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-weight: 600;
+  margin-left: 2px;
+}
+
+.mastery-clear-pill {
+  background: #dcfce7;
+  color: #166534;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-weight: 600;
+  margin-left: 2px;
+}
+
+.mastery-track {
+  width: 100%;
+  height: 6px;
+  background: #e2e8f0;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.mastery-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+
+.mastery-fill-low {
+  background: #94a3b8;
+}
+
+.mastery-fill-mid {
+  background: #3b82f6;
+}
+
+.mastery-fill-high {
+  background: #10b981;
+}
+
+.mastery-fill-gold {
+  background: linear-gradient(90deg, #f59e0b, #10b981);
+}
+
 /* Toolbar & Filter in Compendio */
 .toolbar {
   display: flex;

@@ -284,7 +284,9 @@
     } else {
       dom.dueBadge.hidden = true;
     }
-    dom.reviewedToday.textContent = `Repasados hoy: ${state.stats.reviewed_today}`;
+    const gm = state.stats.global_mastery;
+    const gmText = gm ? ` · Maestría Global: ${gm.mastery_score.toFixed(1)}%` : "";
+    dom.reviewedToday.textContent = `Repasados hoy: ${state.stats.reviewed_today}${gmText}`;
   }
 
   // --- Vista 1: Guía de Áreas y Categorías ---
@@ -294,24 +296,61 @@
       .join("");
   }
 
-  function renderGuide() {
-    dom.areasContainer.innerHTML = state.areas.map(area => {
-      const catsHtml = area.categories.map(c => `
-        <div class="cat-card" data-cat-id="${c.id}">
-          <div class="cat-top">
-            <span class="zoom-badge zoom-${c.zoom_level}">Zoom ${c.zoom_level}</span>
-            <span class="cat-terms-preview">${c.term_count || 0} términos</span>
-          </div>
-          <div class="cat-name">${escapeHtml(c.name)}</div>
-          <p class="cat-desc">${escapeHtml(c.description.substring(0, 110))}...</p>
+  function renderMasteryBar(m) {
+    if (!m || !m.total_terms) return "";
+    const pct = Math.min(100, Math.max(0, Number(m.mastery_score || 0)));
+    const barClass = m.is_canonically_mastered
+      ? "mastery-fill-gold"
+      : pct >= 70
+      ? "mastery-fill-high"
+      : pct > 0
+      ? "mastery-fill-mid"
+      : "mastery-fill-low";
+    const dueChip = m.due_today > 0
+      ? `<span class="mastery-due-pill">⏳ ${m.due_today} hoy</span>`
+      : `<span class="mastery-clear-pill">✅ Al día</span>`;
+    return `
+      <div class="mastery-box">
+        <div class="mastery-row">
+          <span class="mastery-status">${escapeHtml(m.status_label || "")}</span>
+          <span class="mastery-pct"><b>${pct.toFixed(0)}%</b> · ${m.mastered_count}/${m.total_terms} ≥21d ${dueChip}</span>
         </div>
-      `).join("");
+        <div class="mastery-track" title="Maestría: ${pct.toFixed(1)}% (${m.mastered_count} de ${m.total_terms} términos con intervalo ≥ 21 días)">
+          <div class="mastery-fill ${barClass}" style="width: ${pct}%;"></div>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderGuide() {
+    const activeCatId = state.stats && state.stats.active_focus ? state.stats.active_focus.category_id : null;
+    dom.areasContainer.innerHTML = state.areas.map(area => {
+      const am = area.mastery || null;
+      const areaPct = am && am.total_terms ? `${am.mastery_score.toFixed(0)}% Maestría (${am.status_label})` : "";
+      const catsHtml = area.categories.map(c => {
+        const isFocus = activeCatId === c.id;
+        const focusBadge = isFocus ? `<span class="focus-active-pill">🎯 Enfoque Activo</span>` : "";
+        return `
+        <div class="cat-card ${isFocus ? "cat-card-focus" : ""}" data-cat-id="${c.id}">
+          <div>
+            <div class="cat-top">
+              <span class="zoom-badge zoom-${c.zoom_level}">Zoom ${c.zoom_level}</span>
+              <span class="cat-terms-preview">${c.term_count || 0} términos</span>
+            </div>
+            ${focusBadge}
+            <div class="cat-name">${escapeHtml(c.name)}</div>
+            <p class="cat-desc">${escapeHtml(c.description.substring(0, 110))}...</p>
+          </div>
+          ${renderMasteryBar(c.mastery)}
+        </div>
+      `;
+      }).join("");
 
       return `
         <div class="area-section">
           <div class="area-header">
             <span>${escapeHtml(area.name)}</span>
-            <small style="color: #64748b; font-weight: normal;">${area.categories.length} categorías</small>
+            <small style="color: #475569; font-weight: 600;">${areaPct ? `${escapeHtml(areaPct)} · ` : ""}${area.categories.length} categorías</small>
           </div>
           <div class="cat-grid">${catsHtml}</div>
         </div>
@@ -333,7 +372,9 @@
     dom.dcZoom.textContent = `Zoom ${cat.zoom_level} · ${cat.zoom_label}`;
     dom.dcZoom.className = `zoom-pill zoom-${cat.zoom_level}`;
     dom.dcName.textContent = cat.name;
-    dom.dcArea.textContent = `Área: ${cat.macro_area} (${cat.term_count || 0} términos en el glosario)`;
+    const m = cat.mastery;
+    const mInfo = m ? ` · Maestría: ${m.mastery_score.toFixed(1)}% (${m.status_label})` : "";
+    dom.dcArea.textContent = `Área: ${cat.macro_area} (${cat.term_count || 0} términos${mInfo})`;
     dom.dcDesc.textContent = cat.description;
     dom.dlgCat.showModal();
   }
@@ -464,7 +505,10 @@
       const count = data.count || state.dueCards.length;
       dom.dueNum.textContent = count;
       if (state.activeFocus) {
-        dom.dueLabel.textContent = `pendientes hoy · 🎯 Enfoque actual: ${state.activeFocus.category} (${state.activeFocus.category_due} por dominar en esta categoría)`;
+        const mScore = typeof state.activeFocus.mastery_score === "number"
+          ? ` · Maestría: ${state.activeFocus.mastery_score.toFixed(0)}%`
+          : "";
+        dom.dueLabel.textContent = `pendientes hoy · 🎯 Enfoque actual: ${state.activeFocus.category} (${state.activeFocus.category_due} hoy${mScore})`;
       } else {
         dom.dueLabel.textContent = count === 1 ? "término por repasar hoy" : "términos por repasar hoy";
       }

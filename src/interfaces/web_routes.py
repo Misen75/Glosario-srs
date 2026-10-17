@@ -97,7 +97,11 @@ class VerifyPinIn(BaseModel):
     pin: str
 
 
-def _cat_dto(c: Category, counts: dict[int, int] | None = None) -> dict:
+def _cat_dto(
+    c: Category,
+    counts: dict[int, int] | None = None,
+    mastery_map: dict[int, dict] | None = None,
+) -> dict:
     d = {
         "id": c.id,
         "macro_area": c.macro_area,
@@ -109,10 +113,13 @@ def _cat_dto(c: Category, counts: dict[int, int] | None = None) -> dict:
     }
     if counts is not None:
         d["term_count"] = counts.get(c.id, 0)
+    if mastery_map is not None and c.id in mastery_map:
+        d["mastery"] = mastery_map[c.id]
     return d
 
 
 def _card_dto(card: TermCard, service: GlossaryService, with_preview: bool = False) -> dict:
+    from src.domain import srs_scheduler
     t, s = card.term, card.srs
     d = {
         "id": t.id,
@@ -131,6 +138,8 @@ def _card_dto(card: TermCard, service: GlossaryService, with_preview: bool = Fal
             "repetitions": s.repetitions,
             "next_review_date": s.next_review_date.isoformat(),
             "due": s.next_review_date <= date.today(),
+            "maturity_score": srs_scheduler.term_maturity_score(s),
+            "maturity_stage": srs_scheduler.term_maturity_stage(s),
         },
     }
     if with_preview:
@@ -171,20 +180,33 @@ def init_web_routes(service_factory):
 
     @router.get("/areas")
     def get_areas(request: Request, _pin: str = Header(None, alias="X-Web-Pin")):
+        from src.domain import srs_scheduler
         require_web_pin(request, _pin)
         service: GlossaryService = service_factory()
         counts = service.repo.count_terms_by_category()
-        return [
-            {"name": a.name, "categories": [_cat_dto(c, counts) for c in a.categories]}
-            for a in service.list_areas()
-        ]
+        mastery_map = service.mastery_by_category()
+        terms = service.repo.list_terms()
+        states_map = service.repo.list_srs_states()
+        today = date.today()
+
+        result = []
+        for a in service.list_areas():
+            cat_ids = {c.id for c in a.categories}
+            area_states = [states_map[t.id] for t in terms if t.category_id in cat_ids and t.id in states_map]
+            result.append({
+                "name": a.name,
+                "mastery": srs_scheduler.compute_mastery_metrics(area_states, today),
+                "categories": [_cat_dto(c, counts, mastery_map) for c in a.categories],
+            })
+        return result
 
     @router.get("/categories")
     def get_categories(request: Request, _pin: str = Header(None, alias="X-Web-Pin")):
         require_web_pin(request, _pin)
         service: GlossaryService = service_factory()
         counts = service.repo.count_terms_by_category()
-        return [_cat_dto(c, counts) for c in service.repo.list_categories()]
+        mastery_map = service.mastery_by_category()
+        return [_cat_dto(c, counts, mastery_map) for c in service.repo.list_categories()]
 
     @router.get("/terms")
     def get_terms(request: Request, _pin: str = Header(None, alias="X-Web-Pin")):

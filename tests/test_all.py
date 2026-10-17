@@ -162,15 +162,25 @@ class InMemoryRepository:
         self.srs_states[s.term_id] = s
 
     def get_active_focus_category_id(self, today: date) -> int | None:
-        ordered_cats = sorted(
-            self.categories.values(),
-            key=lambda c: (c.macro_area, int(c.zoom_level), c.id),
-        )
-        for c in ordered_cats:
-            for t in self.terms.values():
-                if t.category_id == c.id and self.srs_states[t.id].next_review_date <= today:
-                    return c.id
-        return None
+        due_cats = []
+        for c in self.categories.values():
+            cat_terms = [t for t in self.terms.values() if t.category_id == c.id]
+            has_due = any(self.srs_states[t.id].next_review_date <= today for t in cat_terms)
+            if not has_due:
+                continue
+            reviewed_today_ts = [
+                self.srs_states[t.id].last_reviewed_at
+                for t in cat_terms
+                if self.srs_states[t.id].last_reviewed_at is not None
+                and self.srs_states[t.id].last_reviewed_at.date() == today
+            ]
+            has_review_today = 0 if reviewed_today_ts else 1
+            latest_ts = max(reviewed_today_ts).timestamp() if reviewed_today_ts else 0.0
+            due_cats.append(((has_review_today, -latest_ts, c.macro_area, int(c.zoom_level), c.id), c.id))
+        if not due_cats:
+            return None
+        due_cats.sort(key=lambda item: item[0])
+        return due_cats[0][1]
 
     def list_due_term_ids(
         self,
@@ -555,6 +565,90 @@ class TestCloudEndpoints(unittest.TestCase):
         self.assertEqual(focus_2["category_id"], cat_b.id)
         due_2 = self.service.due_cards(today=today, limit=5)
         self.assertEqual([c.term.id for c in due_2], [t_b1.id])
+
+    def test_protected_active_session_not_hijacked_by_new_term(self):
+        today = date(2026, 10, 17)
+        now = datetime(2026, 10, 17, 10, 0, 0)
+        cat_a = self.repo.get_or_create_category("Ingeniería de Software", "1. Principios", "Base", ZoomLevel.MICRO)
+        cat_b = self.repo.get_or_create_category("Ingeniería de Software", "2. Arquitectura", "Macro", ZoomLevel.MACRO)
+
+        # cat_a ya fue despejada antes; cat_b tiene 2 términos por dominar hoy
+        t_b1 = self.repo.add_term(
+            cat_b.id,
+            NewTermDraft("CQRS", "Ingeniería de Software", "2. Arquitectura", "Macro", ZoomLevel.MACRO, "def", "analog", "trade"),
+            today=today,
+        )
+        t_b2 = self.repo.add_term(
+            cat_b.id,
+            NewTermDraft("Event Sourcing", "Ingeniería de Software", "2. Arquitectura", "Macro", ZoomLevel.MACRO, "def", "analog", "trade"),
+            today=today,
+        )
+
+        # El usuario inicia su sesión en cat_b repasando t_b1
+        self.service.review(t_b1.id, Rating.MASTERED, now=now)
+        self.assertEqual(self.service.active_focus(today=today)["category_id"], cat_b.id)
+
+        # A mitad de sesión de cat_b, el usuario agrega un nuevo término a cat_a (que alfabéticamente va antes)
+        t_a_new = self.repo.add_term(
+            cat_a.id,
+            NewTermDraft("DRY", "Ingeniería de Software", "1. Principios", "Base", ZoomLevel.MICRO, "def", "analog", "trade"),
+            today=today,
+        )
+
+        # El enfoque NO debe saltar a cat_a a mitad de sesión: debe terminar cat_b primero
+        focus_mid = self.service.active_focus(today=today)
+        self.assertEqual(focus_mid["category_id"], cat_b.id, "La sesión activa en cat_b no debe ser interrumpida")
+
+        # Una vez que termina el último término pendiente de cat_b (t_b2), ahora sí pasa a cat_a para estudiar DRY
+        self.service.review(t_b2.id, Rating.MASTERED, now= datetime(2026, 10, 17, 10, 5, 0))
+        focus_after = self.service.active_focus(today=today)
+        self.assertEqual(focus_after["category_id"], cat_a.id)
+        self.assertEqual(self.service.due_cards(today=today, limit=5)[0].term.id, t_a_new.id)
+
+    def test_quantitative_mastery_indicator_and_spaced_return(self):
+        today = date(2026, 10, 17)
+        cat = self.repo.get_or_create_category("Ingeniería de Software", "1. Principios", "Base", ZoomLevel.MICRO)
+        t1 = self.repo.add_term(
+            cat.id,
+            NewTermDraft("SOLID", "Ingeniería de Software", "1. Principios", "Base", ZoomLevel.MICRO, "def", "analog", "trade"),
+            today=today,
+        )
+
+        # Etapa 0: Nuevo (0%)
+        m0 = self.service.category_mastery(cat.id, today=today)
+        self.assertEqual(m0["mastery_score"], 0.0)
+        self.assertFalse(m0["is_canonically_mastered"])
+
+        # Etapa 1: 1er repaso Dominado -> 1 día (30% - En Adquisición, pero hoy ya está despejada)
+        s1 = self.service.review(t1.id, Rating.MASTERED, now=datetime(2026, 10, 17, 9, 0, 0))
+        self.assertEqual(s1.interval_days, 1)
+        m1 = self.service.category_mastery(cat.id, today=today)
+        self.assertEqual(m1["mastery_score"], 30.0)
+        self.assertTrue(m1["is_session_cleared"])
+        self.assertFalse(m1["is_canonically_mastered"])
+
+        # Al día siguiente (día +1), la categoría regresa automáticamente al foco activo por repetición espaciada
+        day_2 = date(2026, 10, 18)
+        self.assertEqual(self.service.active_focus(today=day_2)["category_id"], cat.id)
+        s2 = self.service.review(t1.id, Rating.MASTERED, now=datetime(2026, 10, 18, 9, 0, 0))
+        self.assertEqual(s2.interval_days, 6)
+
+        # 6 días después (día +7), vuelve al foco y al dominarse salta a ~16 días (70% - En Consolidación)
+        day_8 = date(2026, 10, 24)
+        self.assertEqual(self.service.active_focus(today=day_8)["category_id"], cat.id)
+        s3 = self.service.review(t1.id, Rating.MASTERED, now=datetime(2026, 10, 24, 9, 0, 0))
+        self.assertGreaterEqual(s3.interval_days, 15)
+        m3 = self.service.category_mastery(cat.id, today=day_8)
+        self.assertEqual(m3["mastery_score"], 70.0)
+
+        # En el siguiente repaso supera el umbral de 21 días -> 100% Maestría Canónica
+        day_24 = date(2026, 11, 9)
+        s4 = self.service.review(t1.id, Rating.MASTERED, now=datetime(2026, 11, 9, 9, 0, 0))
+        self.assertGreaterEqual(s4.interval_days, 21)
+        m4 = self.service.category_mastery(cat.id, today=day_24)
+        self.assertEqual(m4["mastery_score"], 100.0)
+        self.assertTrue(m4["is_canonically_mastered"])
+        self.assertEqual(m4["status_label"], "🏆 Maestría Canónica")
 
 
 if __name__ == "__main__":

@@ -186,6 +186,29 @@ class GlossaryService:
         )
 
     # ---------------------------------------------------------------- SRS
+    def category_mastery(self, category_id: int, today: Optional[date] = None) -> dict:
+        today = today or date.today()
+        terms = self.repo.list_terms(category_id=category_id)
+        states_map = self.repo.list_srs_states()
+        states = [states_map[t.id] for t in terms if t.id in states_map]
+        return srs_scheduler.compute_mastery_metrics(states, today)
+
+    def mastery_by_category(self, today: Optional[date] = None) -> dict[int, dict]:
+        today = today or date.today()
+        cats = self.repo.list_categories()
+        terms = self.repo.list_terms()
+        states_map = self.repo.list_srs_states()
+        by_cat: dict[int, list[SRSState]] = {c.id: [] for c in cats}
+        for t in terms:
+            if t.id in states_map:
+                by_cat.setdefault(t.category_id, []).append(states_map[t.id])
+        return {cid: srs_scheduler.compute_mastery_metrics(st_list, today) for cid, st_list in by_cat.items()}
+
+    def global_mastery(self, today: Optional[date] = None) -> dict:
+        today = today or date.today()
+        states = list(self.repo.list_srs_states().values())
+        return srs_scheduler.compute_mastery_metrics(states, today)
+
     def active_focus(self, today: Optional[date] = None) -> Optional[dict]:
         """Devuelve el Área y Categoría específica en la que se concentra el estudio actual hasta dominarla."""
         today = today or date.today()
@@ -203,7 +226,7 @@ class GlossaryService:
         if not cat:
             return None
         cat_due = self.count_due(today, category_id=cat_id)
-        cat_total = len(self.repo.list_terms(category_id=cat_id))
+        cat_mastery = self.category_mastery(cat_id, today)
         return {
             "category_id": cat.id,
             "category": cat.name,
@@ -211,7 +234,11 @@ class GlossaryService:
             "zoom_level": int(cat.zoom_level),
             "zoom_label": cat.zoom_level.label,
             "category_due": cat_due,
-            "category_total": cat_total,
+            "category_total": cat_mastery["total_terms"],
+            "mastery_score": cat_mastery["mastery_score"],
+            "status_label": cat_mastery["status_label"],
+            "is_canonically_mastered": cat_mastery["is_canonically_mastered"],
+            "mastery": cat_mastery,
         }
 
     def due_cards(
@@ -253,6 +280,7 @@ class GlossaryService:
 
     def stats(self, today: Optional[date] = None) -> dict:
         today = today or date.today()
+        g_mastery = self.global_mastery(today)
         return {
             "total_terms": self.repo.count_terms(),
             "total_categories": len(self.repo.list_categories()),
@@ -260,4 +288,5 @@ class GlossaryService:
             "reviewed_today": self.repo.count_reviews_on(today),
             "ai_available": bool(self.enricher and self.enricher.available),
             "active_focus": self.active_focus(today),
+            "global_mastery": g_mastery,
         }

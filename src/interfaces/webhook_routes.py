@@ -150,10 +150,12 @@ def format_card_front(
     step: int = 1,
     session_limit: int = SESSION_CARD_LIMIT,
     category_due: int = 0,
+    mastery_score: Optional[float] = None,
 ) -> str:
     header = f"🧠 <b>ENTRENAMIENTO SRS (Tarjeta {step}/{session_limit} de la tanda)</b>"
     if category_due > 0:
-        header += f"\n🎯 <i>Enfoque activo en esta categoría: quedan <b>{category_due}</b> para dominarla</i>"
+        m_txt = f" · Maestría: <b>{mastery_score:.0f}%</b>" if mastery_score is not None else ""
+        header += f"\n🎯 <i>Enfoque activo en esta categoría: quedan <b>{category_due}</b> hoy{m_txt}</i>"
     if remaining > 0:
         header += f"\n📚 <i>Total global pendientes hoy: <b>{remaining}</b></i>"
     zoom_badge = f"[Zoom {int(card.category.zoom_level)}: {card.category.zoom_level.label}]"
@@ -285,12 +287,15 @@ async def send_next_review_card(service: GlossaryService, chat_id: int | str, st
     card = due[0]
     total_due = service.count_due()
     cat_due = service.count_due(category_id=card.category.id)
+    cat_mastery = service.category_mastery(card.category.id) if hasattr(service, "category_mastery") else None
+    m_score = cat_mastery["mastery_score"] if cat_mastery else None
     text = format_card_front(
         card,
         remaining=total_due,
         step=step,
         session_limit=SESSION_CARD_LIMIT,
         category_due=cat_due,
+        mastery_score=m_score,
     )
     await send_message(
         chat_id=chat_id,
@@ -377,6 +382,10 @@ async def process_telegram_update(payload: dict, service: GlossaryService):
                 f"(en {new_state.interval_days} días · EF: {new_state.ease_factor:.2f})\n"
             )
 
+            if prev_cat and hasattr(service, "category_mastery"):
+                cm = service.category_mastery(prev_cat.id)
+                summary += f"📈 Maestría de «{escape_html(prev_cat.name)}»: <b>{cm['mastery_score']:.1f}%</b> ({cm['status_label']})\n"
+
             next_focus = service.active_focus()
             if prev_cat and next_focus and next_focus["category_id"] != prev_cat.id:
                 summary += (
@@ -447,13 +456,25 @@ async def process_telegram_update(payload: dict, service: GlossaryService):
 
     if raw_text.startswith("/stats"):
         st = service.stats()
+        gm = st.get("global_mastery") or {}
+        focus = st.get("active_focus")
+        focus_line = ""
+        if focus:
+            focus_line = (
+                f"\n🎯 <b>Enfoque Activo:</b> {escape_html(focus['macro_area'])} · {escape_html(focus['category'])}\n"
+                f"   └ Pendientes hoy: <b>{focus['category_due']}/{focus['category_total']}</b> · "
+                f"Maestría: <b>{focus.get('mastery_score', 0.0):.1f}%</b> ({escape_html(focus.get('status_label', ''))})"
+            )
         msg_text = (
             f"📊 <b>ESTADÍSTICAS DEL GLOSARIO (PostgreSQL)</b>\n\n"
             f"📚 Términos totales: <b>{st['total_terms']}</b>\n"
             f"🏷️ Categorías: <b>{st['total_categories']}</b>\n"
             f"🧠 Tarjetas pendientes hoy: <b>{st['due_today']}</b> (en tandas de {SESSION_CARD_LIMIT})\n"
             f"✅ Repasadas hoy: <b>{st['reviewed_today']}</b>\n"
+            f"📈 Maestría Global: <b>{gm.get('mastery_score', 0.0):.1f}%</b> "
+            f"(Maduras ≥21d: <b>{gm.get('mastered_count', 0)}/{gm.get('total_terms', 0)}</b>)\n"
             f"🤖 Enriquecedor IA: <b>{'Activo' if st['ai_available'] else 'Sin API Key'}</b>"
+            f"{focus_line}"
         )
         await send_message(chat_id=chat_id, text=msg_text)
         return

@@ -395,7 +395,11 @@ class PostgresGlossaryRepository:
                 )
 
     def get_active_focus_category_id(self, today: date) -> Optional[int]:
-        """Encuentra la primera categoría (ordenada por área y nivel de zoom) que aún tiene tarjetas por dominar hoy."""
+        """Encuentra la categoría de foco activo:
+        1. Si hay una categoría con repasos HOY que aún tiene fichas pendientes hoy, se mantiene fija
+           (protección de sesión activa para no interrumpir cuando se captura un término en otra categoría).
+        2. De lo contrario, selecciona la primera categoría pendiente por orden canónico (macro_area, zoom_level, id).
+        """
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -404,9 +408,14 @@ class PostgresGlossaryRepository:
                        JOIN terms t ON t.category_id = c.id
                        JOIN srs_state s ON s.term_id = t.id
                        WHERE s.next_review_date <= %s
-                       ORDER BY c.macro_area ASC, c.zoom_level ASC, c.id ASC
+                       GROUP BY c.id, c.macro_area, c.zoom_level
+                       ORDER BY CASE WHEN MAX(CASE WHEN s.last_reviewed_at IS NOT NULL AND DATE(s.last_reviewed_at) = %s THEN 1 ELSE 0 END) = 1 THEN 0 ELSE 1 END ASC,
+                                MAX(CASE WHEN s.last_reviewed_at IS NOT NULL AND DATE(s.last_reviewed_at) = %s THEN s.last_reviewed_at ELSE NULL END) DESC NULLS LAST,
+                                c.macro_area ASC,
+                                c.zoom_level ASC,
+                                c.id ASC
                        LIMIT 1""",
-                    (today,),
+                    (today, today, today),
                 )
                 row = cur.fetchone()
         return row[0] if row else None
