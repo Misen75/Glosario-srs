@@ -159,8 +159,12 @@ class GlossaryService:
         cat = self.repo.get_or_create_category(
             draft.macro_area, draft.category_name, draft.category_description, draft.zoom_level
         )
+        cfg = self.get_settings()
         try:
-            term = self.repo.add_term(cat.id, draft)
+            try:
+                term = self.repo.add_term(cat.id, draft, initial_ease_factor=cfg.get("initial_ease_factor", 2.5))
+            except TypeError:
+                term = self.repo.add_term(cat.id, draft)
         except TermAlreadyExistsError as e:
             all_cards = tuple(self._card(t) for t in self._find_all_by_name(draft.term)) or (self._card(e.term),)
             return CaptureResult(
@@ -185,16 +189,80 @@ class GlossaryService:
             suggested_scopes=filtered_scopes,
         )
 
+    # ---------------------------------------------------- Administración y Configuración
+    def get_settings(self) -> dict:
+        if hasattr(self.repo, "get_settings"):
+            return self.repo.get_settings()
+        return {
+            "session_card_limit": 5,
+            "maturity_threshold_days": 21,
+            "initial_ease_factor": 2.5,
+            "focused_mode": True,
+            "theme": "light",
+            "step_by_step_reveal": False,
+        }
+
+    def update_settings(self, **kwargs) -> dict:
+        if hasattr(self.repo, "update_settings"):
+            return self.repo.update_settings(**kwargs)
+        return self.get_settings()
+
+    def reenrich_term(self, term_id: int, target_scope: Optional[str] = None) -> TermCard:
+        """Reenvía un registro existente a la IA para regenerar su ficha con rigor canónico."""
+        card = self.get_card(term_id)
+        if not card:
+            raise KeyError(f"Término {term_id} no existe")
+        if not self.enricher or not self.enricher.available:
+            raise RuntimeError("Autocompletado IA no configurado: define GEMINI_API_KEY en .env")
+
+        categories = self.repo.list_categories()
+        cats_by_id = {c.id: c for c in categories}
+        examples = [
+            (t, cats_by_id[t.category_id])
+            for n in self.STYLE_EXAMPLES
+            if (t := self.repo.find_term_by_name(n))
+        ]
+        effective_scope = (target_scope or "").strip() or card.category.name
+        try:
+            draft = self.enricher.enrich(
+                card.term.term,
+                categories,
+                examples,
+                target_scope=effective_scope,
+            )
+        except TypeError:
+            draft = self.enricher.enrich(card.term.term, categories, examples)
+
+        cat = self.repo.get_or_create_category(
+            draft.macro_area, draft.category_name, draft.category_description, draft.zoom_level
+        )
+        # Evitar colisión UNIQUE (category_id, term) si ya existe otra acepción distinta en esa categoría
+        collision = self.repo.find_term_by_name(draft.term, category_id=cat.id)
+        target_cat_id = card.category.id if (collision and collision.id != term_id) else cat.id
+
+        updated = self.repo.update_term_from_draft(term_id, target_cat_id, draft)
+        if not updated:
+            raise KeyError(f"No se pudo actualizar el término {term_id}")
+        return self.get_card(term_id)
+
+    def delete_term(self, term_id: int) -> bool:
+        """Elimina un registro y su historial SRS asociado."""
+        if not hasattr(self.repo, "delete_term"):
+            raise RuntimeError("El repositorio no soporta eliminación administrativa.")
+        return self.repo.delete_term(term_id)
+
     # ---------------------------------------------------------------- SRS
     def category_mastery(self, category_id: int, today: Optional[date] = None) -> dict:
         today = today or date.today()
+        threshold = int(self.get_settings().get("maturity_threshold_days", 21))
         terms = self.repo.list_terms(category_id=category_id)
         states_map = self.repo.list_srs_states()
         states = [states_map[t.id] for t in terms if t.id in states_map]
-        return srs_scheduler.compute_mastery_metrics(states, today)
+        return srs_scheduler.compute_mastery_metrics(states, today, maturity_threshold_days=threshold)
 
     def mastery_by_category(self, today: Optional[date] = None) -> dict[int, dict]:
         today = today or date.today()
+        threshold = int(self.get_settings().get("maturity_threshold_days", 21))
         cats = self.repo.list_categories()
         terms = self.repo.list_terms()
         states_map = self.repo.list_srs_states()
@@ -202,16 +270,23 @@ class GlossaryService:
         for t in terms:
             if t.id in states_map:
                 by_cat.setdefault(t.category_id, []).append(states_map[t.id])
-        return {cid: srs_scheduler.compute_mastery_metrics(st_list, today) for cid, st_list in by_cat.items()}
+        return {
+            cid: srs_scheduler.compute_mastery_metrics(st_list, today, maturity_threshold_days=threshold)
+            for cid, st_list in by_cat.items()
+        }
 
     def global_mastery(self, today: Optional[date] = None) -> dict:
         today = today or date.today()
+        threshold = int(self.get_settings().get("maturity_threshold_days", 21))
         states = list(self.repo.list_srs_states().values())
-        return srs_scheduler.compute_mastery_metrics(states, today)
+        return srs_scheduler.compute_mastery_metrics(states, today, maturity_threshold_days=threshold)
 
     def active_focus(self, today: Optional[date] = None) -> Optional[dict]:
         """Devuelve el Área y Categoría específica en la que se concentra el estudio actual hasta dominarla."""
         today = today or date.today()
+        cfg = self.get_settings()
+        if not cfg.get("focused_mode", True):
+            return None
         cat_id = None
         if hasattr(self.repo, "get_active_focus_category_id"):
             cat_id = self.repo.get_active_focus_category_id(today)
@@ -245,13 +320,16 @@ class GlossaryService:
         self,
         today: Optional[date] = None,
         limit: Optional[int] = None,
-        focused: bool = True,
+        focused: Optional[bool] = None,
     ) -> list[TermCard]:
         today = today or date.today()
+        cfg = self.get_settings()
+        use_focused = cfg.get("focused_mode", True) if focused is None else focused
+        use_limit = cfg.get("session_card_limit", 5) if limit is None else limit
         try:
-            due_ids = self.repo.list_due_term_ids(today, limit=limit, focused=focused)
+            due_ids = self.repo.list_due_term_ids(today, limit=use_limit, focused=use_focused)
         except TypeError:
-            due_ids = self.repo.list_due_term_ids(today, limit=limit)
+            due_ids = self.repo.list_due_term_ids(today, limit=use_limit)
         return [c for tid in due_ids if (c := self.get_card(tid))]
 
     def count_due(self, today: Optional[date] = None, category_id: Optional[int] = None) -> int:
@@ -289,4 +367,5 @@ class GlossaryService:
             "ai_available": bool(self.enricher and self.enricher.available),
             "active_focus": self.active_focus(today),
             "global_mastery": g_mastery,
+            "settings": self.get_settings(),
         }

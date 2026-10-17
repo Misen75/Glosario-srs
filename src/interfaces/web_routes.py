@@ -97,6 +97,19 @@ class VerifyPinIn(BaseModel):
     pin: str
 
 
+class ReenrichIn(BaseModel):
+    scope: Optional[str] = Field(None, max_length=60)
+
+
+class SettingsUpdateIn(BaseModel):
+    session_card_limit: Optional[int] = Field(None, ge=1, le=50)
+    maturity_threshold_days: Optional[int] = Field(None, ge=7, le=180)
+    initial_ease_factor: Optional[float] = Field(None, ge=1.3, le=4.0)
+    focused_mode: Optional[bool] = None
+    theme: Optional[str] = Field(None, pattern="^(light|dark)$")
+    step_by_step_reveal: Optional[bool] = None
+
+
 def _cat_dto(
     c: Category,
     counts: dict[int, int] | None = None,
@@ -118,7 +131,7 @@ def _cat_dto(
     return d
 
 
-def _card_dto(card: TermCard, service: GlossaryService, with_preview: bool = False) -> dict:
+def _card_dto(card: TermCard, service: GlossaryService, with_preview: bool = False, threshold: int = 21) -> dict:
     from src.domain import srs_scheduler
     t, s = card.term, card.srs
     d = {
@@ -138,8 +151,8 @@ def _card_dto(card: TermCard, service: GlossaryService, with_preview: bool = Fal
             "repetitions": s.repetitions,
             "next_review_date": s.next_review_date.isoformat(),
             "due": s.next_review_date <= date.today(),
-            "maturity_score": srs_scheduler.term_maturity_score(s),
-            "maturity_stage": srs_scheduler.term_maturity_stage(s),
+            "maturity_score": srs_scheduler.term_maturity_score(s, threshold),
+            "maturity_stage": srs_scheduler.term_maturity_stage(s, threshold),
         },
     }
     if with_preview:
@@ -178,6 +191,23 @@ def init_web_routes(service_factory):
         service: GlossaryService = service_factory()
         return service.stats()
 
+    @router.get("/settings")
+    def get_settings_endpoint(request: Request, _pin: str = Header(None, alias="X-Web-Pin")):
+        require_web_pin(request, _pin)
+        service: GlossaryService = service_factory()
+        return service.get_settings()
+
+    @router.put("/settings")
+    def update_settings_endpoint(
+        body: SettingsUpdateIn,
+        request: Request,
+        _pin: str = Header(None, alias="X-Web-Pin"),
+    ):
+        require_web_pin(request, _pin)
+        service: GlossaryService = service_factory()
+        payload = {k: v for k, v in body.model_dump().items() if v is not None}
+        return service.update_settings(**payload)
+
     @router.get("/areas")
     def get_areas(request: Request, _pin: str = Header(None, alias="X-Web-Pin")):
         from src.domain import srs_scheduler
@@ -188,6 +218,7 @@ def init_web_routes(service_factory):
         terms = service.repo.list_terms()
         states_map = service.repo.list_srs_states()
         today = date.today()
+        threshold = int(service.get_settings().get("maturity_threshold_days", 21))
 
         result = []
         for a in service.list_areas():
@@ -195,7 +226,7 @@ def init_web_routes(service_factory):
             area_states = [states_map[t.id] for t in terms if t.category_id in cat_ids and t.id in states_map]
             result.append({
                 "name": a.name,
-                "mastery": srs_scheduler.compute_mastery_metrics(area_states, today),
+                "mastery": srs_scheduler.compute_mastery_metrics(area_states, today, maturity_threshold_days=threshold),
                 "categories": [_cat_dto(c, counts, mastery_map) for c in a.categories],
             })
         return result
@@ -212,7 +243,8 @@ def init_web_routes(service_factory):
     def get_terms(request: Request, _pin: str = Header(None, alias="X-Web-Pin")):
         require_web_pin(request, _pin)
         service: GlossaryService = service_factory()
-        return [_card_dto(c, service) for c in service.list_cards()]
+        threshold = int(service.get_settings().get("maturity_threshold_days", 21))
+        return [_card_dto(c, service, threshold=threshold) for c in service.list_cards()]
 
     @router.get("/terms/{term_id}")
     def get_term(term_id: int, request: Request, _pin: str = Header(None, alias="X-Web-Pin")):
@@ -221,22 +253,26 @@ def init_web_routes(service_factory):
         card = service.get_card(term_id)
         if not card:
             raise HTTPException(404, "Término no encontrado")
-        return _card_dto(card, service)
+        threshold = int(service.get_settings().get("maturity_threshold_days", 21))
+        return _card_dto(card, service, threshold=threshold)
 
     @router.get("/review/due")
-    def review_due(request: Request, limit: int = 5, _pin: str = Header(None, alias="X-Web-Pin")):
+    def review_due(request: Request, limit: Optional[int] = None, _pin: str = Header(None, alias="X-Web-Pin")):
         require_web_pin(request, _pin)
         service: GlossaryService = service_factory()
+        cfg = service.get_settings()
+        threshold = int(cfg.get("maturity_threshold_days", 21))
         cards = service.due_cards(limit=limit)
         focus = service.active_focus()
         return {
             "count": service.count_due(),
+            "session_limit": cfg.get("session_card_limit", 5),
             "active_focus": focus,
-            "cards": [_card_dto(c, service, with_preview=True) for c in cards],
+            "cards": [_card_dto(c, service, with_preview=True, threshold=threshold) for c in cards],
         }
 
     # =========================================================================
-    # ENDPOINTS DE ESCRITURA (Protegidos con X-Web-Pin)
+    # ENDPOINTS DE ESCRITURA Y ADMINISTRACIÓN (Protegidos con X-Web-Pin)
     # =========================================================================
 
     @router.post("/terms", status_code=201)
@@ -266,6 +302,46 @@ def init_web_routes(service_factory):
             "existing_cards": [_card_dto(c, service) for c in getattr(result, "existing_cards", ())],
             "suggested_scopes": getattr(result, "suggested_scopes", ()),
         }
+
+    @router.post("/terms/{term_id}/reenrich")
+    def reenrich_term_endpoint(
+        term_id: int,
+        request: Request,
+        body: Optional[ReenrichIn] = None,
+        _pin: str = Header(None, alias="X-Web-Pin"),
+    ):
+        require_web_pin(request, _pin)
+        service: GlossaryService = service_factory()
+        try:
+            card = service.reenrich_term(term_id, target_scope=body.scope if body else None)
+        except KeyError:
+            raise HTTPException(404, "Término no encontrado")
+        except InvalidTermError as e:
+            raise HTTPException(400, str(e))
+        except RuntimeError:
+            raise HTTPException(503, "Servicio de enriquecimiento IA no disponible.")
+        except EnrichmentError as e:
+            logger.error("Error regenerando término %d con IA: %s", term_id, e)
+            raise HTTPException(502, "Error al comunicarse con el proveedor de IA.")
+
+        return {
+            "updated": True,
+            "card": _card_dto(card, service),
+            "category": _cat_dto(card.category),
+        }
+
+    @router.delete("/terms/{term_id}")
+    def delete_term_endpoint(
+        term_id: int,
+        request: Request,
+        _pin: str = Header(None, alias="X-Web-Pin"),
+    ):
+        require_web_pin(request, _pin)
+        service: GlossaryService = service_factory()
+        deleted = service.delete_term(term_id)
+        if not deleted:
+            raise HTTPException(404, "Término no encontrado")
+        return {"deleted": True, "term_id": term_id}
 
     @router.post("/review/{term_id}")
     def review_term(

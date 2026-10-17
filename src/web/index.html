@@ -31,6 +31,9 @@
       <button class="tab" data-view="train" role="tab">
         <span class="tab-ico">🧠</span><span>Entrenar</span><span class="badge" id="due-badge" hidden>0</span>
       </button>
+      <button class="tab" data-view="settings" role="tab">
+        <span class="tab-ico">⚙️</span><span>Configuración</span>
+      </button>
     </nav>
 
     <!-- ============ VISTA 1: Guía de Áreas y Categorías ============ -->
@@ -88,15 +91,15 @@
           <h2 class="fc-term" id="fc-term"></h2>
           <p class="fc-hint" id="fc-hint">Intenta explicarlo en voz alta · toca para revelar</p>
           <div class="fc-answer" id="fc-answer" hidden>
-            <div class="fc-block">
+            <div class="fc-block" id="fc-block-def">
               <h3>Definición técnica</h3>
               <p id="fc-def"></p>
             </div>
-            <div class="fc-block analog">
+            <div class="fc-block analog" id="fc-block-analog">
               <h3>Analogía cotidiana</h3>
               <p id="fc-analog"></p>
             </div>
-            <div class="fc-block tradeoff">
+            <div class="fc-block tradeoff" id="fc-block-tradeoff">
               <h3>Trade-off · cuándo NO usarlo</h3>
               <p id="fc-tradeoff"></p>
             </div>
@@ -109,6 +112,89 @@
           <button class="rate rate-3" data-rating="3"><b>Dominado</b><small id="pv-3">Espaciar</small></button>
         </div>
         <p class="kbd-hint">Teclado: <kbd>Espacio</kbd> revelar · <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> calificar</p>
+      </div>
+    </section>
+
+    <!-- ============ VISTA 4: Configuración y Gestión de Registros ============ -->
+    <section id="view-settings" class="view" aria-label="Configuración">
+      <div class="settings-grid">
+        <!-- Tarjeta 1: Algoritmo SRS y Enfoque -->
+        <div class="settings-card">
+          <h3>🧠 Parámetros del Algoritmo SRS y Enfoque</h3>
+          <p class="settings-sub">Sincronizados en PostgreSQL para la Web App y el Bot de Telegram.</p>
+          <form id="form-settings">
+            <div class="form-row">
+              <label for="set-session-limit">Tarjetas por tanda diaria (1 – 50)</label>
+              <input type="number" id="set-session-limit" min="1" max="50" value="5" required>
+            </div>
+            <div class="form-row">
+              <label for="set-maturity-days">Umbral de Maestría Canónica en días (7 – 180)</label>
+              <input type="number" id="set-maturity-days" min="7" max="180" value="21" required>
+            </div>
+            <div class="form-row">
+              <label for="set-initial-ef">Factor de Facilidad Inicial (EF: 1.3 – 4.0)</label>
+              <input type="number" id="set-initial-ef" min="1.3" max="4.0" step="0.1" value="2.5" required>
+            </div>
+            <div class="form-row">
+              <label for="set-focused-mode">Modo de Estudio de las Cola SRS</label>
+              <select id="set-focused-mode">
+                <option value="true">🎯 Foco Estricto (Dominar 1 categoría a la vez)</option>
+                <option value="false">🌐 Global / Mixto (Mezclar todas las áreas)</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label for="set-theme">Tema Visual de la Interfaz</label>
+              <select id="set-theme">
+                <option value="light">☀️ Modo Claro</option>
+                <option value="dark">🌙 Modo Oscuro</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label for="set-step-reveal">Revelación de Respuestas en Flashcards</label>
+              <select id="set-step-reveal">
+                <option value="false">⚡ Completa en 1 toque (Definición + Analogía + Trade-off)</option>
+                <option value="true">🪜 Paso a paso (1° Definición → 2° Analogía → 3° Trade-off)</option>
+              </select>
+            </div>
+            <div class="settings-actions">
+              <button type="submit" class="btn btn-primary" id="btn-save-settings">💾 Guardar Configuración</button>
+            </div>
+          </form>
+        </div>
+
+        <!-- Tarjeta 2: Seguridad y Sesión Local -->
+        <div class="settings-card">
+          <h3>🔒 Seguridad y Acceso en este Dispositivo</h3>
+          <p class="settings-sub">Administra el PIN almacenado localmente para autenticar peticiones contra el backend.</p>
+          <div class="pin-status-box">
+            <div>Estado del PIN local: <b id="pin-status-label">Activo</b></div>
+            <p style="font-size:12px; color:#64748b; margin:6px 0 0 0;">
+              El servidor protege todos los endpoints mediante el encabezado <code>X-Web-Pin</code> y bloqueo anti fuerza bruta.
+            </p>
+          </div>
+          <div class="settings-actions" style="justify-content: flex-start; margin-top: 14px;">
+            <button type="button" class="btn btn-primary" id="btn-change-pin">🔑 Cambiar PIN</button>
+            <button type="button" class="btn btn-danger-outline" id="btn-logout-pin">🚪 Cerrar sesión local</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tarjeta 3: Gestión de Registros (Reenviar a la IA o Eliminar) -->
+      <div class="settings-card" style="margin-top: 20px;">
+        <div class="admin-header">
+          <div>
+            <h3>🛠️ Gestión de Registros (Reenviar a la IA / Eliminar)</h3>
+            <p class="settings-sub">Regenera cualquier ficha con el estándar actual de la IA (definición rigurosa + todos sus ámbitos) o elimina registros.</p>
+          </div>
+          <span class="badge-neutral" id="admin-count-badge">0 registros</span>
+        </div>
+
+        <div class="toolbar" style="margin-top: 12px;">
+          <input type="search" id="admin-search" placeholder="Filtrar registro por nombre o categoría…" autocomplete="off">
+          <select id="admin-cat-filter"><option value="">Todas las categorías</option></select>
+        </div>
+
+        <div id="admin-records-list" class="admin-records-list"></div>
       </div>
     </section>
   </div>
@@ -154,6 +240,6 @@
   </dialog>
 
   <div class="toast" id="toast" hidden></div>
-  <script src="/app.js?v=2.4"></script>
+  <script src="/app.js?v=2.5"></script>
 </body>
 </html>

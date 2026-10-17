@@ -10,7 +10,16 @@
     dueCards: [],
     currentDueIndex: 0,
     isCardRevealed: false,
+    revealStep: 0,
     stats: null,
+    settings: {
+      session_card_limit: 5,
+      maturity_threshold_days: 21,
+      initial_ease_factor: 2.5,
+      focused_mode: true,
+      theme: localStorage.getItem("glosario_srs_theme") || "light",
+      step_by_step_reveal: false,
+    },
   };
 
   // Zoom helpers
@@ -27,11 +36,10 @@
     views: document.querySelectorAll(".view"),
     dueBadge: document.getElementById("due-badge"),
 
-    
     // Guía
     zoomLegend: document.getElementById("zoom-legend"),
     areasContainer: document.getElementById("areas"),
-    
+
     // Compendio
     search: document.getElementById("search"),
     catFilter: document.getElementById("cat-filter"),
@@ -39,7 +47,7 @@
     resultCount: document.getElementById("result-count"),
     btnAdd: document.getElementById("btn-add"),
     btnPrint: document.getElementById("btn-print"),
-    
+
     // Entrenamiento
     dueNum: document.getElementById("due-num"),
     dueLabel: document.getElementById("due-label"),
@@ -52,6 +60,9 @@
     fcTerm: document.getElementById("fc-term"),
     fcHint: document.getElementById("fc-hint"),
     fcAnswer: document.getElementById("fc-answer"),
+    fcBlockDef: document.getElementById("fc-block-def"),
+    fcBlockAnalog: document.getElementById("fc-block-analog"),
+    fcBlockTradeoff: document.getElementById("fc-block-tradeoff"),
     fcDef: document.getElementById("fc-def"),
     fcAnalog: document.getElementById("fc-analog"),
     fcTradeoff: document.getElementById("fc-tradeoff"),
@@ -60,21 +71,38 @@
     pv1: document.getElementById("pv-1"),
     pv2: document.getElementById("pv-2"),
     pv3: document.getElementById("pv-3"),
-    
+
+    // Configuración y Administración
+    formSettings: document.getElementById("form-settings"),
+    setSessionLimit: document.getElementById("set-session-limit"),
+    setMaturityDays: document.getElementById("set-maturity-days"),
+    setInitialEf: document.getElementById("set-initial-ef"),
+    setFocusedMode: document.getElementById("set-focused-mode"),
+    setTheme: document.getElementById("set-theme"),
+    setStepReveal: document.getElementById("set-step-reveal"),
+    btnSaveSettings: document.getElementById("btn-save-settings"),
+    pinStatusLabel: document.getElementById("pin-status-label"),
+    btnChangePin: document.getElementById("btn-change-pin"),
+    btnLogoutPin: document.getElementById("btn-logout-pin"),
+    adminCountBadge: document.getElementById("admin-count-badge"),
+    adminSearch: document.getElementById("admin-search"),
+    adminCatFilter: document.getElementById("admin-cat-filter"),
+    adminRecordsList: document.getElementById("admin-records-list"),
+
     // Diálogos
     dlgCat: document.getElementById("dlg-category"),
     dcZoom: document.getElementById("dc-zoom"),
     dcName: document.getElementById("dc-name"),
     dcArea: document.getElementById("dc-area"),
     dcDesc: document.getElementById("dc-desc"),
-    
+
     dlgAdd: document.getElementById("dlg-add"),
     formAdd: document.getElementById("form-add"),
     addInput: document.getElementById("add-input"),
     addStatus: document.getElementById("add-status"),
     addCancel: document.getElementById("add-cancel"),
     addSubmit: document.getElementById("add-submit"),
-    
+
     toast: document.getElementById("toast"),
   };
 
@@ -206,6 +234,29 @@
       .toLowerCase();
   }
 
+  function applyTheme(theme) {
+    const mode = theme === "dark" ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", mode);
+    localStorage.setItem("glosario_srs_theme", mode);
+  }
+  applyTheme(state.settings.theme);
+
+  function syncSettingsUI() {
+    const s = state.settings;
+    if (dom.setSessionLimit) dom.setSessionLimit.value = s.session_card_limit ?? 5;
+    if (dom.setMaturityDays) dom.setMaturityDays.value = s.maturity_threshold_days ?? 21;
+    if (dom.setInitialEf) dom.setInitialEf.value = s.initial_ease_factor ?? 2.5;
+    if (dom.setFocusedMode) dom.setFocusedMode.value = String(s.focused_mode ?? true);
+    if (dom.setTheme) dom.setTheme.value = s.theme || "light";
+    if (dom.setStepReveal) dom.setStepReveal.value = String(s.step_by_step_reveal ?? false);
+    applyTheme(s.theme || "light");
+    if (dom.pinStatusLabel) {
+      const hasPin = Boolean(getSavedPin());
+      dom.pinStatusLabel.textContent = hasPin ? "✅ Configurado en este dispositivo" : "⚠️ No guardado";
+      dom.pinStatusLabel.style.color = hasPin ? "#16a34a" : "#d97706";
+    }
+  }
+
   // --- Pestañas y Vistas ---
   function switchView(viewName) {
     dom.tabs.forEach(tab => {
@@ -222,6 +273,9 @@
       loadData();
     } else if (viewName === "table") {
       renderTermsTable();
+    } else if (viewName === "settings") {
+      syncSettingsUI();
+      renderAdminRecords();
     }
   }
 
@@ -256,6 +310,9 @@
       state.areas = Array.isArray(areasRes) ? areasRes : [];
       state.terms = Array.isArray(termsRes) ? termsRes : [];
       state.stats = statsRes;
+      if (statsRes && statsRes.settings) {
+        state.settings = { ...state.settings, ...statsRes.settings };
+      }
       
       // Flatten categories for fast lookup
       state.categories = [];
@@ -263,10 +320,12 @@
         (a.categories || []).forEach(c => state.categories.push(c));
       });
 
+      syncSettingsUI();
       renderZoomLegend();
       renderGuide();
       populateCategoryFilter();
       renderTermsTable();
+      renderAdminRecords();
       updateStatsUI();
       await loadDueCards();
     } catch (err) {
@@ -381,10 +440,17 @@
 
   // --- Vista 2: Compendio (Tabla) ---
   function populateCategoryFilter() {
-    const current = dom.catFilter.value;
-    dom.catFilter.innerHTML = '<option value="">Todas las categorías</option>' +
+    const optionsHtml = '<option value="">Todas las categorías</option>' +
       state.categories.map(c => `<option value="${c.id}">${escapeHtml(c.name)} (${c.term_count || 0})</option>`).join("");
+    const current = dom.catFilter.value;
+    dom.catFilter.innerHTML = optionsHtml;
     dom.catFilter.value = current;
+
+    if (dom.adminCatFilter) {
+      const adminCurrent = dom.adminCatFilter.value;
+      dom.adminCatFilter.innerHTML = optionsHtml;
+      dom.adminCatFilter.value = adminCurrent;
+    }
   }
 
   function renderTermsTable() {
@@ -510,7 +576,8 @@
           : "";
         dom.dueLabel.textContent = `pendientes hoy · 🎯 Enfoque actual: ${state.activeFocus.category} (${state.activeFocus.category_due} hoy${mScore})`;
       } else {
-        dom.dueLabel.textContent = count === 1 ? "término por repasar hoy" : "términos por repasar hoy";
+        const modeTxt = state.settings.focused_mode === false ? " · 🌐 Modo Global Mixto" : "";
+        dom.dueLabel.textContent = (count === 1 ? "término por repasar hoy" : "términos por repasar hoy") + modeTxt;
       }
       
       if (count > 0) {
@@ -537,10 +604,17 @@
     }
 
     state.isCardRevealed = false;
+    state.revealStep = 0;
     dom.flashcard.classList.remove("revealed");
     dom.fcAnswer.hidden = true;
+    if (dom.fcBlockDef) dom.fcBlockDef.hidden = false;
+    if (dom.fcBlockAnalog) dom.fcBlockAnalog.hidden = false;
+    if (dom.fcBlockTradeoff) dom.fcBlockTradeoff.hidden = false;
     dom.ratingPanel.hidden = true;
     dom.fcHint.hidden = false;
+    dom.fcHint.textContent = state.settings.step_by_step_reveal
+      ? "Paso 1/3: Intenta explicarlo · toca para revelar Definición Técnica"
+      : "Intenta explicarlo en voz alta · toca para revelar";
 
     dom.fcCategory.textContent = `${card.macro_area} · ${card.category}`;
     dom.fcTerm.textContent = card.term;
@@ -577,11 +651,36 @@
 
   function revealCard() {
     if (state.isCardRevealed) return;
-    state.isCardRevealed = true;
-    dom.flashcard.classList.add("revealed");
+    if (!state.settings.step_by_step_reveal) {
+      state.isCardRevealed = true;
+      state.revealStep = 3;
+      dom.flashcard.classList.add("revealed");
+      dom.fcAnswer.hidden = false;
+      if (dom.fcBlockDef) dom.fcBlockDef.hidden = false;
+      if (dom.fcBlockAnalog) dom.fcBlockAnalog.hidden = false;
+      if (dom.fcBlockTradeoff) dom.fcBlockTradeoff.hidden = false;
+      dom.fcHint.hidden = true;
+      dom.ratingPanel.hidden = false;
+      return;
+    }
+
+    state.revealStep += 1;
     dom.fcAnswer.hidden = false;
-    dom.fcHint.hidden = true;
-    dom.ratingPanel.hidden = false;
+    if (state.revealStep === 1) {
+      if (dom.fcBlockDef) dom.fcBlockDef.hidden = false;
+      if (dom.fcBlockAnalog) dom.fcBlockAnalog.hidden = true;
+      if (dom.fcBlockTradeoff) dom.fcBlockTradeoff.hidden = true;
+      dom.fcHint.textContent = "Paso 2/3: Toca para revelar la Analogía Cotidiana";
+    } else if (state.revealStep === 2) {
+      if (dom.fcBlockAnalog) dom.fcBlockAnalog.hidden = false;
+      dom.fcHint.textContent = "Paso 3/3: Toca para revelar el Trade-off y calificar";
+    } else {
+      state.isCardRevealed = true;
+      dom.flashcard.classList.add("revealed");
+      if (dom.fcBlockTradeoff) dom.fcBlockTradeoff.hidden = false;
+      dom.fcHint.hidden = true;
+      dom.ratingPanel.hidden = false;
+    }
   }
 
   dom.flashcard.addEventListener("click", () => {
@@ -658,6 +757,167 @@
       if (e.key === "3") submitRating(3);
     }
   });
+
+  // --- Vista 4: Configuración y Gestión de Registros ---
+  if (dom.setTheme) {
+    dom.setTheme.addEventListener("change", () => {
+      applyTheme(dom.setTheme.value);
+    });
+  }
+
+  if (dom.formSettings) {
+    dom.formSettings.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const payload = {
+        session_card_limit: parseInt(dom.setSessionLimit.value, 10) || 5,
+        maturity_threshold_days: parseInt(dom.setMaturityDays.value, 10) || 21,
+        initial_ease_factor: parseFloat(dom.setInitialEf.value) || 2.5,
+        focused_mode: dom.setFocusedMode.value === "true",
+        theme: dom.setTheme.value === "dark" ? "dark" : "light",
+        step_by_step_reveal: dom.setStepReveal.value === "true",
+      };
+      dom.btnSaveSettings.disabled = true;
+      try {
+        const updated = await fetchJsonWithPin("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        state.settings = { ...state.settings, ...updated };
+        syncSettingsUI();
+        showToast("✅ Configuración guardada y sincronizada en PostgreSQL");
+        await loadData();
+      } catch (err) {
+        showToast("Error guardando configuración: " + err.message);
+      } finally {
+        dom.btnSaveSettings.disabled = false;
+      }
+    });
+  }
+
+  if (dom.btnChangePin) {
+    dom.btnChangePin.addEventListener("click", async () => {
+      const newPin = await requestPinModal("Ingresa el nuevo WEB_ACCESS_PIN para este dispositivo:");
+      if (newPin) {
+        syncSettingsUI();
+        showToast("🔑 PIN actualizado en este dispositivo");
+        await loadData();
+      }
+    });
+  }
+
+  if (dom.btnLogoutPin) {
+    dom.btnLogoutPin.addEventListener("click", () => {
+      clearSavedPin();
+      syncSettingsUI();
+      showToast("🚪 Sesión local cerrada. Se solicitará el PIN al recargar.");
+    });
+  }
+
+  function renderAdminRecords() {
+    if (!dom.adminRecordsList) return;
+    const query = normalizeText(dom.adminSearch ? dom.adminSearch.value.trim() : "");
+    const filterCatId = dom.adminCatFilter && dom.adminCatFilter.value
+      ? parseInt(dom.adminCatFilter.value, 10)
+      : null;
+
+    const filtered = state.terms.filter(t => {
+      if (filterCatId && t.category_id !== filterCatId) return false;
+      if (!query) return true;
+      return normalizeText(`${t.term} ${t.category} ${t.macro_area}`).includes(query);
+    });
+
+    if (dom.adminCountBadge) {
+      dom.adminCountBadge.textContent = `${filtered.length} de ${state.terms.length} registros`;
+    }
+
+    if (filtered.length === 0) {
+      dom.adminRecordsList.innerHTML = `<div class="admin-empty">No hay registros que coincidan con el filtro.</div>`;
+      return;
+    }
+
+    dom.adminRecordsList.innerHTML = filtered.map(t => {
+      const srs = t.srs || {};
+      const mScore = srs.maturity_score ?? 0;
+      const scopesCount = Array.isArray(t.other_scopes) ? t.other_scopes.length : 0;
+      return `
+        <div class="admin-record-item" data-term-id="${t.id}">
+          <div class="admin-record-info">
+            <div class="admin-record-title">
+              <b>${escapeHtml(t.term)}</b>
+              <span class="admin-record-cat">${escapeHtml(t.macro_area)} · ${escapeHtml(t.category)}</span>
+              <span class="admin-record-srs">Madurez: ${mScore}% (${srs.interval_days || 0}d · ${scopesCount} ámbitos)</span>
+            </div>
+            <div class="admin-record-def">${escapeHtml((t.technical_definition || "").substring(0, 140))}…</div>
+          </div>
+          <div class="admin-record-actions">
+            <input type="text" class="admin-scope-input" placeholder="Ámbito opcional (ej. Derecho)" value="${escapeHtml(t.category)}" title="Ámbito objetivo para la IA">
+            <button type="button" class="btn btn-sm btn-ai" data-action="reenrich" data-id="${t.id}">🤖 Reenviar a IA</button>
+            <button type="button" class="btn btn-sm btn-danger" data-action="delete" data-id="${t.id}" data-name="${escapeHtml(t.term)}">🗑️ Eliminar</button>
+          </div>
+        </div>
+      `;
+    }).join("");
+
+    dom.adminRecordsList.querySelectorAll("button[data-action='reenrich']").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const id = parseInt(btn.dataset.id, 10);
+        const row = btn.closest(".admin-record-item");
+        const scopeInput = row ? row.querySelector(".admin-scope-input") : null;
+        const scope = scopeInput ? scopeInput.value.trim() : "";
+        await handleReenrichTerm(id, scope, btn);
+      });
+    });
+
+    dom.adminRecordsList.querySelectorAll("button[data-action='delete']").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const id = parseInt(btn.dataset.id, 10);
+        const name = btn.dataset.name || `#${id}`;
+        await handleDeleteTerm(id, name, btn);
+      });
+    });
+  }
+
+  async function handleReenrichTerm(termId, scope, btnEl) {
+    const origText = btnEl.textContent;
+    btnEl.disabled = true;
+    btnEl.textContent = "⏳ Regenerando...";
+    try {
+      const res = await fetchJsonWithPin(`/api/terms/${termId}/reenrich`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope: scope || null }),
+      });
+      showToast(`✨ Ficha de "${res.card.term}" regenerada con la IA`);
+      await loadData();
+    } catch (err) {
+      showToast("Error regenerando con IA: " + err.message, 4000);
+      btnEl.disabled = false;
+      btnEl.textContent = origText;
+    }
+  }
+
+  async function handleDeleteTerm(termId, termName, btnEl) {
+    if (!window.confirm(`¿Estás seguro de eliminar el registro "${termName}" y su historial de repaso?`)) {
+      return;
+    }
+    btnEl.disabled = true;
+    btnEl.textContent = "⏳...";
+    try {
+      await fetchJsonWithPin(`/api/terms/${termId}`, {
+        method: "DELETE",
+      });
+      showToast(`🗑️ Registro "${termName}" eliminado`);
+      await loadData();
+    } catch (err) {
+      showToast("Error eliminando registro: " + err.message, 4000);
+      btnEl.disabled = false;
+      btnEl.textContent = "🗑️ Eliminar";
+    }
+  }
+
+  if (dom.adminSearch) dom.adminSearch.addEventListener("input", renderAdminRecords);
+  if (dom.adminCatFilter) dom.adminCatFilter.addEventListener("change", renderAdminRecords);
 
   function escapeHtml(str) {
     if (!str) return "";

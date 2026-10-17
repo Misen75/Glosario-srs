@@ -114,7 +114,13 @@ class InMemoryRepository:
             return [t for t in self.terms.values() if t.category_id == category_id]
         return list(self.terms.values())
 
-    def add_term(self, category_id: int, draft: NewTermDraft, today: date | None = None) -> Term:
+    def add_term(
+        self,
+        category_id: int,
+        draft: NewTermDraft,
+        today: date | None = None,
+        initial_ease_factor: float = 2.5,
+    ) -> Term:
         existing = self.find_term_by_name(draft.term, category_id=category_id)
         if existing:
             from src.infrastructure.db_repository import TermAlreadyExistsError
@@ -133,8 +139,37 @@ class InMemoryRepository:
             other_scopes=tuple(draft.other_scopes or ()),
         )
         self.terms[tid] = term
-        self.srs_states[tid] = SRSState(term_id=tid, next_review_date=today or date.today())
+        self.srs_states[tid] = SRSState(
+            term_id=tid,
+            ease_factor=float(initial_ease_factor),
+            next_review_date=today or date.today(),
+        )
         return term
+
+    def update_term_from_draft(self, term_id: int, category_id: int, draft: NewTermDraft) -> Term | None:
+        old = self.terms.get(term_id)
+        if not old:
+            return None
+        updated = Term(
+            id=term_id,
+            category_id=category_id,
+            term=draft.term,
+            technical_definition=draft.technical_definition,
+            daily_analogy=draft.daily_analogy,
+            tradeoff_when_not_to_use=draft.tradeoff_when_not_to_use,
+            created_at=old.created_at,
+            other_scopes=tuple(draft.other_scopes or ()),
+        )
+        self.terms[term_id] = updated
+        return updated
+
+    def delete_term(self, term_id: int) -> bool:
+        if term_id not in self.terms:
+            return False
+        del self.terms[term_id]
+        self.srs_states.pop(term_id, None)
+        self.review_logs = [l for l in self.review_logs if l.term_id != term_id]
+        return True
 
     def fill_missing_tradeoff(self, term_id: int, tradeoff: str) -> bool:
         t = self.terms.get(term_id)
@@ -217,6 +252,26 @@ class InMemoryRepository:
 
     def count_reviews_on(self, day: date) -> int:
         return sum(1 for l in self.review_logs if l.reviewed_at.date() == day)
+
+    def get_settings(self) -> dict:
+        if not hasattr(self, "_settings"):
+            self._settings = {
+                "session_card_limit": 5,
+                "maturity_threshold_days": 21,
+                "initial_ease_factor": 2.5,
+                "focused_mode": True,
+                "theme": "light",
+                "step_by_step_reveal": False,
+            }
+        return dict(self._settings)
+
+    def update_settings(self, **kwargs) -> dict:
+        cur = self.get_settings()
+        for k, v in kwargs.items():
+            if v is not None and k in cur:
+                cur[k] = v
+        self._settings = cur
+        return dict(self._settings)
 
 
 class TestCloudEndpoints(unittest.TestCase):
@@ -649,6 +704,66 @@ class TestCloudEndpoints(unittest.TestCase):
         self.assertEqual(m4["mastery_score"], 100.0)
         self.assertTrue(m4["is_canonically_mastered"])
         self.assertEqual(m4["status_label"], "🏆 Maestría Canónica")
+
+    def test_settings_and_record_management_endpoints(self):
+        class FakeEnricher:
+            available = True
+
+            def enrich(self, term, categories, examples=(), target_scope=None, exclude_categories=()):
+                return NewTermDraft(
+                    term=term,
+                    macro_area="Ingeniería de Software",
+                    category_name=target_scope or "Arquitectura de Software",
+                    category_description="Descripción canónica actualizada",
+                    zoom_level=ZoomLevel.MACRO,
+                    technical_definition="Definición técnica regenerada por IA con máxima precisión terminológica.",
+                    daily_analogy="Analogía regenerada.",
+                    tradeoff_when_not_to_use="Trade-off regenerado.",
+                    other_scopes=("Derecho", "Economía", "Biología", "Redes"),
+                )
+
+        self.service.enricher = FakeEnricher()
+
+        # 1. GET /api/settings y PUT /api/settings
+        get_cfg = self.client.get("/api/settings")
+        self.assertEqual(get_cfg.status_code, 200)
+        self.assertEqual(get_cfg.json()["session_card_limit"], 5)
+
+        put_cfg = self.client.put(
+            "/api/settings",
+            json={
+                "session_card_limit": 8,
+                "maturity_threshold_days": 30,
+                "initial_ease_factor": 2.7,
+                "focused_mode": False,
+                "theme": "dark",
+                "step_by_step_reveal": True,
+            },
+        )
+        self.assertEqual(put_cfg.status_code, 200)
+        self.assertEqual(put_cfg.json()["session_card_limit"], 8)
+        self.assertEqual(put_cfg.json()["maturity_threshold_days"], 30)
+        self.assertFalse(put_cfg.json()["focused_mode"])
+        self.assertEqual(put_cfg.json()["theme"], "dark")
+        self.assertTrue(put_cfg.json()["step_by_step_reveal"])
+
+        # 2. Crear un término con versión antigua y luego regenerarlo vía POST /api/terms/{id}/reenrich
+        cat = self.repo.get_or_create_category("Ingeniería de Software", "1. Principios", "Base", ZoomLevel.MICRO)
+        t_old = self.repo.add_term(
+            cat.id,
+            NewTermDraft("Resiliencia", "Ingeniería de Software", "1. Principios", "Base", ZoomLevel.MICRO, "def corta", "analog corta", "trade corto"),
+        )
+        res_reenrich = self.client.post(f"/api/terms/{t_old.id}/reenrich", json={"scope": "Sistemas Distribuidos"})
+        self.assertEqual(res_reenrich.status_code, 200)
+        re_data = res_reenrich.json()["card"]
+        self.assertIn("máxima precisión terminológica", re_data["technical_definition"])
+        self.assertEqual(len(re_data["other_scopes"]), 4)
+
+        # 3. Eliminar el registro vía DELETE /api/terms/{id}
+        res_del = self.client.delete(f"/api/terms/{t_old.id}")
+        self.assertEqual(res_del.status_code, 200)
+        self.assertTrue(res_del.json()["deleted"])
+        self.assertIsNone(self.repo.get_term(t_old.id))
 
 
 if __name__ == "__main__":

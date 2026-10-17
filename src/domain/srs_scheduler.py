@@ -74,29 +74,33 @@ def is_due(state: SRSState, today: date) -> bool:
     return state.next_review_date <= today
 
 
-def term_maturity_score(state: SRSState) -> int:
+def term_maturity_score(state: SRSState, maturity_threshold_days: int = MATURITY_THRESHOLD_DAYS) -> int:
     """Puntaje cuantitativo de madurez cognitiva de una ficha (0, 30, 70 o 100)."""
     if state.repetitions <= 0 or state.interval_days <= 0:
         return 0
     if state.interval_days < 7:
         return 30
-    if state.interval_days < MATURITY_THRESHOLD_DAYS:
+    if state.interval_days < maturity_threshold_days:
         return 70
     return 100
 
 
-def term_maturity_stage(state: SRSState) -> str:
+def term_maturity_stage(state: SRSState, maturity_threshold_days: int = MATURITY_THRESHOLD_DAYS) -> str:
     """Etapa de madurez de una ficha: new | learning | consolidating | mastered."""
     if state.repetitions <= 0 or state.interval_days <= 0:
         return "new"
     if state.interval_days < 7:
         return "learning"
-    if state.interval_days < MATURITY_THRESHOLD_DAYS:
+    if state.interval_days < maturity_threshold_days:
         return "consolidating"
     return "mastered"
 
 
-def compute_mastery_metrics(states: Sequence[SRSState], today: date) -> dict:
+def compute_mastery_metrics(
+    states: Sequence[SRSState],
+    today: date,
+    maturity_threshold_days: int = MATURITY_THRESHOLD_DAYS,
+) -> dict:
     """Calcula el indicador cuantitativo de maestría (0-100%) para un conjunto de fichas."""
     total = len(states)
     if total == 0:
@@ -108,13 +112,14 @@ def compute_mastery_metrics(states: Sequence[SRSState], today: date) -> dict:
             "consolidating_count": 0,
             "mastered_count": 0,
             "due_today": 0,
+            "maturity_threshold_days": maturity_threshold_days,
             "is_session_cleared": False,
             "is_canonically_mastered": False,
             "status_label": "Sin términos",
         }
 
-    scores = [term_maturity_score(s) for s in states]
-    stages = [term_maturity_stage(s) for s in states]
+    scores = [term_maturity_score(s, maturity_threshold_days) for s in states]
+    stages = [term_maturity_stage(s, maturity_threshold_days) for s in states]
     due_count = sum(1 for s in states if is_due(s, today))
     mastered_count = sum(1 for st in stages if st == "mastered")
     consolidating_count = sum(1 for st in stages if st == "consolidating")
@@ -146,6 +151,7 @@ def compute_mastery_metrics(states: Sequence[SRSState], today: date) -> dict:
         "consolidating_count": consolidating_count,
         "mastered_count": mastered_count,
         "due_today": due_count,
+        "maturity_threshold_days": maturity_threshold_days,
         "is_session_cleared": is_session_cleared,
         "is_canonically_mastered": is_canonically_mastered,
         "status_label": status_label,

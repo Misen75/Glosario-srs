@@ -75,12 +75,30 @@ CREATE TABLE IF NOT EXISTS review_log (
 
 CREATE INDEX IF NOT EXISTS idx_srs_next_review ON srs_state(next_review_date);
 
+CREATE TABLE IF NOT EXISTS user_settings (
+    id                      INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    session_card_limit      INTEGER NOT NULL DEFAULT 5 CHECK (session_card_limit BETWEEN 1 AND 50),
+    maturity_threshold_days INTEGER NOT NULL DEFAULT 21 CHECK (maturity_threshold_days BETWEEN 7 AND 180),
+    initial_ease_factor     REAL NOT NULL DEFAULT 2.5 CHECK (initial_ease_factor BETWEEN 1.3 AND 4.0),
+    focused_mode            BOOLEAN NOT NULL DEFAULT TRUE,
+    theme                   VARCHAR(20) NOT NULL DEFAULT 'light',
+    step_by_step_reveal     BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at              TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO user_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
 -- =========================================================================
 -- Inmutabilidad reforzada con funciones y triggers nativos de PostgreSQL
+-- (Permite mutación administrativa explícita dentro de una transacción con
+--  SET LOCAL glosario.allow_admin_mutation = '1')
 -- =========================================================================
 CREATE OR REPLACE FUNCTION trg_terms_prevent_delete()
 RETURNS TRIGGER AS $$
 BEGIN
+    IF current_setting('glosario.allow_admin_mutation', true) = '1' THEN
+        RETURN OLD;
+    END IF;
     RAISE EXCEPTION 'terms es append-only: DELETE estrictamente prohibido';
 END;
 $$ LANGUAGE plpgsql;
@@ -99,6 +117,9 @@ END $$;
 CREATE OR REPLACE FUNCTION trg_terms_prevent_destructive_update()
 RETURNS TRIGGER AS $$
 BEGIN
+    IF current_setting('glosario.allow_admin_mutation', true) = '1' THEN
+        RETURN NEW;
+    END IF;
     IF NEW.id <> OLD.id
        OR NEW.term <> OLD.term
        OR NEW.category_id <> OLD.category_id
@@ -307,7 +328,13 @@ class PostgresGlossaryRepository:
                 rows = cur.fetchall()
         return [self._to_term(r) for r in rows]
 
-    def add_term(self, category_id: int, draft: NewTermDraft, today: Optional[date] = None) -> Term:
+    def add_term(
+        self,
+        category_id: int,
+        draft: NewTermDraft,
+        today: Optional[date] = None,
+        initial_ease_factor: float = 2.5,
+    ) -> Term:
         existing = self.find_term_by_name(draft.term, category_id=category_id)
         if existing:
             raise TermAlreadyExistsError(existing)
@@ -329,11 +356,51 @@ class PostgresGlossaryRepository:
                 term_id = t_row["id"]
 
                 cur.execute(
-                    """INSERT INTO srs_state (term_id, next_review_date)
-                       VALUES (%s, %s)""",
-                    (term_id, today_date),
+                    """INSERT INTO srs_state (term_id, ease_factor, next_review_date)
+                       VALUES (%s, %s, %s)""",
+                    (term_id, float(initial_ease_factor), today_date),
                 )
         return self._to_term(t_row)
+
+    def update_term_from_draft(self, term_id: int, category_id: int, draft: NewTermDraft) -> Optional[Term]:
+        """Regeneración administrativa de un término con IA (con permiso transaccional explícito)."""
+        tradeoff = draft.tradeoff_when_not_to_use.strip() if draft.tradeoff_when_not_to_use else None
+        scopes_list = [s.strip() for s in (draft.other_scopes or ()) if s and s.strip()]
+        with self._connect() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("SET LOCAL glosario.allow_admin_mutation = '1'")
+                cur.execute(
+                    """UPDATE terms
+                       SET category_id = %s,
+                           term = %s,
+                           technical_definition = %s,
+                           daily_analogy = %s,
+                           tradeoff_when_not_to_use = %s,
+                           other_scopes = %s
+                       WHERE id = %s
+                       RETURNING *""",
+                    (
+                        category_id,
+                        draft.term.strip(),
+                        draft.technical_definition.strip(),
+                        draft.daily_analogy.strip(),
+                        tradeoff,
+                        scopes_list,
+                        term_id,
+                    ),
+                )
+                row = cur.fetchone()
+        return self._to_term(row) if row else None
+
+    def delete_term(self, term_id: int) -> bool:
+        """Eliminación administrativa de un registro y su estado/historial SRS asociado."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SET LOCAL glosario.allow_admin_mutation = '1'")
+                cur.execute("DELETE FROM review_log WHERE term_id = %s", (term_id,))
+                cur.execute("DELETE FROM srs_state WHERE term_id = %s", (term_id,))
+                cur.execute("DELETE FROM terms WHERE id = %s", (term_id,))
+                return cur.rowcount == 1
 
     def fill_missing_tradeoff(self, term_id: int, tradeoff: str) -> bool:
         with self._connect() as conn:
@@ -496,3 +563,61 @@ class PostgresGlossaryRepository:
                     (day,),
                 )
                 return cur.fetchone()[0]
+
+    # ------------------------------------------------------------- Settings
+    def get_settings(self) -> dict:
+        defaults = {
+            "session_card_limit": 5,
+            "maturity_threshold_days": 21,
+            "initial_ease_factor": 2.5,
+            "focused_mode": True,
+            "theme": "light",
+            "step_by_step_reveal": False,
+        }
+        try:
+            with self._connect() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute("SELECT * FROM user_settings WHERE id = 1")
+                    r = cur.fetchone()
+                    if not r:
+                        return defaults
+                    return {
+                        "session_card_limit": int(r["session_card_limit"]),
+                        "maturity_threshold_days": int(r["maturity_threshold_days"]),
+                        "initial_ease_factor": round(float(r["initial_ease_factor"]), 2),
+                        "focused_mode": bool(r["focused_mode"]),
+                        "theme": str(r["theme"] or "light"),
+                        "step_by_step_reveal": bool(r["step_by_step_reveal"]),
+                    }
+        except Exception:
+            return defaults
+
+    def update_settings(self, **kwargs) -> dict:
+        current = self.get_settings()
+        merged = {**current, **{k: v for k, v in kwargs.items() if v is not None and k in current}}
+        with self._connect() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """INSERT INTO user_settings (
+                           id, session_card_limit, maturity_threshold_days,
+                           initial_ease_factor, focused_mode, theme, step_by_step_reveal, updated_at
+                       ) VALUES (1, %s, %s, %s, %s, %s, %s, NOW())
+                       ON CONFLICT (id) DO UPDATE SET
+                           session_card_limit = EXCLUDED.session_card_limit,
+                           maturity_threshold_days = EXCLUDED.maturity_threshold_days,
+                           initial_ease_factor = EXCLUDED.initial_ease_factor,
+                           focused_mode = EXCLUDED.focused_mode,
+                           theme = EXCLUDED.theme,
+                           step_by_step_reveal = EXCLUDED.step_by_step_reveal,
+                           updated_at = NOW()
+                       RETURNING *""",
+                    (
+                        int(merged["session_card_limit"]),
+                        int(merged["maturity_threshold_days"]),
+                        float(merged["initial_ease_factor"]),
+                        bool(merged["focused_mode"]),
+                        str(merged["theme"]),
+                        bool(merged["step_by_step_reveal"]),
+                    ),
+                )
+        return self.get_settings()

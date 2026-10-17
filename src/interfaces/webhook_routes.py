@@ -284,16 +284,20 @@ async def send_next_review_card(service: GlossaryService, chat_id: int | str, st
         )
         return
 
+    cfg = service.get_settings() if hasattr(service, "get_settings") else {}
+    session_limit = int(cfg.get("session_card_limit", SESSION_CARD_LIMIT))
+    focused_mode = bool(cfg.get("focused_mode", True))
+
     card = due[0]
     total_due = service.count_due()
-    cat_due = service.count_due(category_id=card.category.id)
-    cat_mastery = service.category_mastery(card.category.id) if hasattr(service, "category_mastery") else None
+    cat_due = service.count_due(category_id=card.category.id) if focused_mode else 0
+    cat_mastery = service.category_mastery(card.category.id) if (focused_mode and hasattr(service, "category_mastery")) else None
     m_score = cat_mastery["mastery_score"] if cat_mastery else None
     text = format_card_front(
         card,
         remaining=total_due,
         step=step,
-        session_limit=SESSION_CARD_LIMIT,
+        session_limit=session_limit,
         category_due=cat_due,
         mastery_score=m_score,
     )
@@ -308,6 +312,8 @@ async def send_next_review_card(service: GlossaryService, chat_id: int | str, st
 async def process_telegram_update(payload: dict, service: GlossaryService):
     """Procesa un update de Telegram de forma desacoplada."""
     allowed_id = get_allowed_chat_id()
+    cfg = service.get_settings() if hasattr(service, "get_settings") else {}
+    session_limit = int(cfg.get("session_card_limit", SESSION_CARD_LIMIT))
 
     # 1. Callback query (clic en botón inline)
     if "callback_query" in payload:
@@ -377,7 +383,7 @@ async def process_telegram_update(payload: dict, service: GlossaryService):
             term_name = card.term.term if card else f"ID {term_id}"
 
             summary = (
-                f"<b>{escape_html(term_name)}</b> ({step}/{SESSION_CARD_LIMIT}) calificado como: <b>{rating_labels[rating]}</b>\n"
+                f"<b>{escape_html(term_name)}</b> ({step}/{session_limit}) calificado como: <b>{rating_labels[rating]}</b>\n"
                 f"📅 Próximo repaso: <b>{new_state.next_review_date.isoformat()}</b> "
                 f"(en {new_state.interval_days} días · EF: {new_state.ease_factor:.2f})\n"
             )
@@ -395,22 +401,22 @@ async def process_telegram_update(payload: dict, service: GlossaryService):
 
             await edit_message_text(chat_id=chat_id, message_id=message_id, text=summary)
 
-            # Verificar si se alcanzó el tope saludable de la tanda (5 tarjetas)
+            # Verificar si se alcanzó el tope saludable de la tanda
             remaining = service.count_due()
             if remaining == 0:
                 await send_next_review_card(service, chat_id, step=1)
-            elif step >= SESSION_CARD_LIMIT:
+            elif step >= session_limit:
                 await send_message(
                     chat_id=chat_id,
                     text=(
-                        f"🎯 <b>¡Tanda de {SESSION_CARD_LIMIT} tarjetas completada!</b>\n"
+                        f"🎯 <b>¡Tanda de {session_limit} tarjetas completada!</b>\n"
                         f"Excelente enfoque. Dosificar el estudio evita la fatiga cognitiva.\n"
                         f"📌 Quedan <b>{remaining}</b> tarjeta(s) pendientes para tus próximos turnos.\n\n"
-                        f"<i>¿Deseas descansar o entrenar otra tanda de {SESSION_CARD_LIMIT} ahora mismo?</i>"
+                        f"<i>¿Deseas descansar o entrenar otra tanda de {session_limit} ahora mismo?</i>"
                     ),
                     reply_markup={
                         "inline_keyboard": [
-                            [{"text": f"🔥 Otra tanda de {SESSION_CARD_LIMIT} tarjetas", "callback_data": "session:start"}]
+                            [{"text": f"🔥 Otra tanda de {session_limit} tarjetas", "callback_data": "session:start"}]
                         ]
                     },
                 )
