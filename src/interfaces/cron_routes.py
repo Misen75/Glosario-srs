@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from datetime import date
 from typing import Optional
 
@@ -27,6 +28,14 @@ from src.interfaces.webhook_routes import (
 
 logger = logging.getLogger("cron_routes")
 router = APIRouter(prefix="/api/cron", tags=["Cloud Cron"])
+
+_last_cron_trigger_time: float = 0.0
+CRON_COOLDOWN_SECONDS: float = 60.0
+
+
+def reset_cron_cooldown():
+    global _last_cron_trigger_time
+    _last_cron_trigger_time = 0.0
 
 
 def init_cron_routes(service_factory):
@@ -48,6 +57,13 @@ def init_cron_routes(service_factory):
 
             if not token or not settings.verify_cron_secret(token):
                 raise HTTPException(status_code=403, detail="CRON_SECRET inválido o ausente.")
+
+        global _last_cron_trigger_time
+        now_time = time.time()
+        if now_time - _last_cron_trigger_time < CRON_COOLDOWN_SECONDS:
+            logger.info("Cron trigger omitido por cooldown activo.")
+            return {"status": "ok", "cooldown": True}
+        _last_cron_trigger_time = now_time
 
         chat_id = get_allowed_chat_id()
         if not chat_id:

@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import logging
 import os
+from collections import deque
 from datetime import datetime
 from typing import Any, Optional
 
 import httpx
-from fastapi import APIRouter, Header, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from src.application.use_cases import GlossaryService, TermCard
@@ -30,6 +31,34 @@ router = APIRouter(prefix="/api/telegram", tags=["Telegram Webhook"])
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
 SESSION_CARD_LIMIT = 5
+
+_DEDUP_CACHE_SIZE = 2000
+_processed_update_ids: set[int] = set()
+_update_ids_order: deque[int] = deque()
+_in_flight_update_ids: set[int] = set()
+
+
+def is_update_duplicate_or_in_flight(update_id: int) -> bool:
+    if update_id in _processed_update_ids or update_id in _in_flight_update_ids:
+        return True
+    _in_flight_update_ids.add(update_id)
+    return False
+
+
+def mark_update_completed(update_id: int):
+    _in_flight_update_ids.discard(update_id)
+    if update_id not in _processed_update_ids:
+        _processed_update_ids.add(update_id)
+        _update_ids_order.append(update_id)
+        if len(_update_ids_order) > _DEDUP_CACHE_SIZE:
+            oldest = _update_ids_order.popleft()
+            _processed_update_ids.discard(oldest)
+
+
+def clear_update_id_cache():
+    _processed_update_ids.clear()
+    _update_ids_order.clear()
+    _in_flight_update_ids.clear()
 
 
 def get_bot_token() -> Optional[str]:
@@ -246,6 +275,196 @@ async def send_next_review_card(service: GlossaryService, chat_id: int | str, st
     )
 
 
+# ------------------------------------------------------------- Procesador de Updates
+async def process_telegram_update(payload: dict, service: GlossaryService):
+    """Procesa un update de Telegram de forma desacoplada."""
+    allowed_id = get_allowed_chat_id()
+
+    # 1. Callback query (clic en botón inline)
+    if "callback_query" in payload:
+        cq = payload["callback_query"]
+        cq_id = cq["id"]
+        user_id = str(cq["from"]["id"])
+        if allowed_id and user_id != allowed_id:
+            await answer_callback_query(cq_id, "No tienes permiso para interactuar con este bot.")
+            return
+
+        data = cq.get("data", "")
+        msg = cq.get("message", {})
+        chat_id = msg.get("chat", {}).get("id")
+        message_id = msg.get("message_id")
+
+        await answer_callback_query(cq_id)
+
+        if data == "session:start" and chat_id:
+            await send_next_review_card(service, chat_id, step=1)
+
+        elif data.startswith("scope:") and chat_id:
+            parts = data.split(":", 2)
+            if len(parts) == 3:
+                term_id = int(parts[1])
+                target_scope = parts[2]
+                base_card = service.get_card(term_id)
+                if base_card:
+                    await call_telegram_api("sendChatAction", {"chat_id": chat_id, "action": "typing"})
+                    try:
+                        res = service.capture_term(base_card.term.term, target_scope=target_scope)
+                        await send_message(
+                            chat_id=chat_id,
+                            text=format_captured_term(res),
+                            reply_markup=keyboard_captured_term(res),
+                        )
+                    except Exception as e:
+                        await send_message(chat_id=chat_id, text=f"❌ Error generando ámbito: {escape_html(str(e))}")
+
+        elif data.startswith("rev:") and chat_id and message_id:
+            parts = data.split(":")
+            term_id = int(parts[1])
+            step = int(parts[2]) if len(parts) > 2 else 1
+            card = service.get_card(term_id)
+            if card:
+                await edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=format_card_back(card),
+                    reply_markup=keyboard_back(service, card, step=step),
+                )
+
+        elif data.startswith("rate:") and chat_id and message_id:
+            parts = data.split(":")
+            term_id = int(parts[1])
+            rating = Rating(int(parts[2]))
+            step = int(parts[3]) if len(parts) > 3 else 1
+
+            card = service.get_card(term_id)
+            new_state = service.review(term_id, rating, datetime.now())
+
+            rating_labels = {
+                Rating.FORGOTTEN: "❌ Olvidado (repetir hoy)",
+                Rating.DOUBTED: "🤔 Dudé (corto plazo)",
+                Rating.MASTERED: "✅ Dominado (espaciado)",
+            }
+            term_name = card.term.term if card else f"ID {term_id}"
+
+            summary = (
+                f"<b>{escape_html(term_name)}</b> ({step}/{SESSION_CARD_LIMIT}) calificado como: <b>{rating_labels[rating]}</b>\n"
+                f"📅 Próximo repaso: <b>{new_state.next_review_date.isoformat()}</b> "
+                f"(en {new_state.interval_days} días · EF: {new_state.ease_factor:.2f})\n"
+            )
+            await edit_message_text(chat_id=chat_id, message_id=message_id, text=summary)
+
+            # Verificar si se alcanzó el tope saludable de la tanda (5 tarjetas)
+            remaining = service.count_due()
+            if remaining == 0:
+                await send_next_review_card(service, chat_id, step=1)
+            elif step >= SESSION_CARD_LIMIT:
+                await send_message(
+                    chat_id=chat_id,
+                    text=(
+                        f"🎯 <b>¡Tanda de {SESSION_CARD_LIMIT} tarjetas completada!</b>\n"
+                        f"Excelente enfoque. Dosificar el estudio evita la fatiga cognitiva.\n"
+                        f"📌 Quedan <b>{remaining}</b> tarjeta(s) pendientes para tus próximos turnos.\n\n"
+                        f"<i>¿Deseas descansar o entrenar otra tanda de {SESSION_CARD_LIMIT} ahora mismo?</i>"
+                    ),
+                    reply_markup={
+                        "inline_keyboard": [
+                            [{"text": f"🔥 Otra tanda de {SESSION_CARD_LIMIT} tarjetas", "callback_data": "session:start"}]
+                        ]
+                    },
+                )
+            else:
+                await send_next_review_card(service, chat_id, step=step + 1)
+
+        return
+
+    # 2. Mensajes normales
+    message = payload.get("message")
+    if not message:
+        return
+
+    chat_id = message["chat"]["id"]
+    sender_id = str(message.get("from", {}).get("id"))
+
+    # Validar usuario autorizado
+    if allowed_id and sender_id != allowed_id:
+        logger.warning("Mensaje ignorado de usuario no autorizado: %s", sender_id)
+        await send_message(
+            chat_id=chat_id,
+            text=f"⛔ Acceso denegado. Tu chat ID es <code>{sender_id}</code>. Configúralo en ALLOWED_CHAT_ID.",
+        )
+        return
+
+    raw_text = (message.get("text") or "").strip()
+    if not raw_text:
+        return
+
+    # Comandos
+    if raw_text.startswith("/start") or raw_text.startswith("/help") or raw_text.startswith("/ayuda"):
+        msg_text = (
+            f"👋 <b>¡Entrenador SRS Multidisciplinar activo en la nube!</b>\n\n"
+            f"Tu Chat ID es: <code>{sender_id}</code>\n"
+            f"Base de datos: <b>PostgreSQL en la Nube</b>\n\n"
+            f"<b>Uso rápido:</b>\n"
+            f"• Escribe el nombre de un concepto (ej. <code>REST</code>, <code>Circuit Breaker</code>, <code>Proceso (Derecho Procesal)</code>) y la IA generará la ficha canónica y te sugerirá otros ámbitos donde aplica.\n"
+            f"• Usa /repasar para iniciar una tanda dosificada de {SESSION_CARD_LIMIT} tarjetas.\n"
+            f"• Usa /stats para ver tus métricas."
+        )
+        await send_message(chat_id=chat_id, text=msg_text)
+        return
+
+    if raw_text.startswith("/stats"):
+        st = service.stats()
+        msg_text = (
+            f"📊 <b>ESTADÍSTICAS DEL GLOSARIO (PostgreSQL)</b>\n\n"
+            f"📚 Términos totales: <b>{st['total_terms']}</b>\n"
+            f"🏷️ Categorías: <b>{st['total_categories']}</b>\n"
+            f"🧠 Tarjetas pendientes hoy: <b>{st['due_today']}</b> (en tandas de {SESSION_CARD_LIMIT})\n"
+            f"✅ Repasadas hoy: <b>{st['reviewed_today']}</b>\n"
+            f"🤖 Enriquecedor IA: <b>{'Activo' if st['ai_available'] else 'Sin API Key'}</b>"
+        )
+        await send_message(chat_id=chat_id, text=msg_text)
+        return
+
+    if raw_text.startswith("/repasar") or raw_text.startswith("/entrenar"):
+        await send_next_review_card(service, chat_id, step=1)
+        return
+
+    # Captura de término con IA
+    await call_telegram_api("sendChatAction", {"chat_id": chat_id, "action": "typing"})
+    try:
+        result = service.capture_term(raw_text)
+        reply = format_captured_term(result)
+        await send_message(chat_id=chat_id, text=reply, reply_markup=keyboard_captured_term(result))
+    except InvalidTermError as e:
+        await send_message(
+            chat_id=chat_id,
+            text=(
+                f"💬 <b>No se guardó en el glosario:</b>\n"
+                f"{escape_html(str(e))}\n\n"
+                f"<i>💡 Escribe un concepto técnico o académico (ej. <code>Event Sourcing</code>, "
+                f"<code>Usucapión (Derecho)</code>) o usa /repasar para entrenar tus tarjetas.</i>"
+            ),
+        )
+    except RuntimeError as e:
+        await send_message(chat_id=chat_id, text=f"⚠️ Configuración: {escape_html(str(e))}")
+    except EnrichmentError as e:
+        await send_message(chat_id=chat_id, text=f"❌ Error con Gemini: {escape_html(str(e))}")
+    except Exception as e:
+        logger.exception("Error capturando término")
+        await send_message(chat_id=chat_id, text=f"❌ Ocurrió un error inesperado: {escape_html(str(e))}")
+
+
+async def _handle_update_safe(payload: dict, service_factory, update_id: Optional[int]):
+    try:
+        service: GlossaryService = service_factory()
+        await process_telegram_update(payload, service)
+    except Exception as e:
+        logger.exception("Error no capturado procesando update %s en background: %s", update_id, e)
+    finally:
+        if update_id is not None:
+            mark_update_completed(update_id)
+
+
 # ------------------------------------------------------------- Endpoint Webhook
 def init_webhook_routes(service_factory):
     """Fábrica de rutas que inyecta la instancia del servicio."""
@@ -253,6 +472,7 @@ def init_webhook_routes(service_factory):
     @router.post("/webhook")
     async def telegram_webhook(
         request: Request,
+        background_tasks: BackgroundTasks,
         x_telegram_bot_api_secret_token: Optional[str] = Header(None, alias="X-Telegram-Bot-Api-Secret-Token"),
     ):
         if settings.TELEGRAM_WEBHOOK_SECRET:
@@ -260,186 +480,15 @@ def init_webhook_routes(service_factory):
                 logger.warning("Rechazado webhook no autenticado: X-Telegram-Bot-Api-Secret-Token inválido o ausente.")
                 raise HTTPException(status_code=403, detail="X-Telegram-Bot-Api-Secret-Token inválido o ausente.")
 
-
         payload = await request.json()
-        logger.info("Telegram update recibido: %s", payload.get("update_id"))
+        update_id = payload.get("update_id")
 
-        service: GlossaryService = service_factory()
-        allowed_id = get_allowed_chat_id()
+        if update_id is not None and is_update_duplicate_or_in_flight(update_id):
+            logger.info("Telegram update %s ignorado (duplicado o ya en progreso)", update_id)
+            return {"ok": True, "status": "duplicate_ignored"}
 
-        # 1. Callback query (clic en botón inline)
-        if "callback_query" in payload:
-            cq = payload["callback_query"]
-            cq_id = cq["id"]
-            user_id = str(cq["from"]["id"])
-            if allowed_id and user_id != allowed_id:
-                await answer_callback_query(cq_id, "No tienes permiso para interactuar con este bot.")
-                return {"ok": True}
-
-            data = cq.get("data", "")
-            msg = cq.get("message", {})
-            chat_id = msg.get("chat", {}).get("id")
-            message_id = msg.get("message_id")
-
-            await answer_callback_query(cq_id)
-
-            if data == "session:start" and chat_id:
-                await send_next_review_card(service, chat_id, step=1)
-
-            elif data.startswith("scope:") and chat_id:
-                parts = data.split(":", 2)
-                if len(parts) == 3:
-                    term_id = int(parts[1])
-                    target_scope = parts[2]
-                    base_card = service.get_card(term_id)
-                    if base_card:
-                        await call_telegram_api("sendChatAction", {"chat_id": chat_id, "action": "typing"})
-                        try:
-                            res = service.capture_term(base_card.term.term, target_scope=target_scope)
-                            await send_message(
-                                chat_id=chat_id,
-                                text=format_captured_term(res),
-                                reply_markup=keyboard_captured_term(res),
-                            )
-                        except Exception as e:
-                            await send_message(chat_id=chat_id, text=f"❌ Error generando ámbito: {escape_html(str(e))}")
-
-            elif data.startswith("rev:") and chat_id and message_id:
-                parts = data.split(":")
-                term_id = int(parts[1])
-                step = int(parts[2]) if len(parts) > 2 else 1
-                card = service.get_card(term_id)
-                if card:
-                    await edit_message_text(
-                        chat_id=chat_id,
-                        message_id=message_id,
-                        text=format_card_back(card),
-                        reply_markup=keyboard_back(service, card, step=step),
-                    )
-
-            elif data.startswith("rate:") and chat_id and message_id:
-                parts = data.split(":")
-                term_id = int(parts[1])
-                rating = Rating(int(parts[2]))
-                step = int(parts[3]) if len(parts) > 3 else 1
-
-                card = service.get_card(term_id)
-                new_state = service.review(term_id, rating, datetime.now())
-
-                rating_labels = {
-                    Rating.FORGOTTEN: "❌ Olvidado (repetir hoy)",
-                    Rating.DOUBTED: "🤔 Dudé (corto plazo)",
-                    Rating.MASTERED: "✅ Dominado (espaciado)",
-                }
-                term_name = card.term.term if card else f"ID {term_id}"
-
-                summary = (
-                    f"<b>{escape_html(term_name)}</b> ({step}/{SESSION_CARD_LIMIT}) calificado como: <b>{rating_labels[rating]}</b>\n"
-                    f"📅 Próximo repaso: <b>{new_state.next_review_date.isoformat()}</b> "
-                    f"(en {new_state.interval_days} días · EF: {new_state.ease_factor:.2f})\n"
-                )
-                await edit_message_text(chat_id=chat_id, message_id=message_id, text=summary)
-
-                # Verificar si se alcanzó el tope saludable de la tanda (5 tarjetas)
-                remaining = service.count_due()
-                if remaining == 0:
-                    await send_next_review_card(service, chat_id, step=1)
-                elif step >= SESSION_CARD_LIMIT:
-                    await send_message(
-                        chat_id=chat_id,
-                        text=(
-                            f"🎯 <b>¡Tanda de {SESSION_CARD_LIMIT} tarjetas completada!</b>\n"
-                            f"Excelente enfoque. Dosificar el estudio evita la fatiga cognitiva.\n"
-                            f"📌 Quedan <b>{remaining}</b> tarjeta(s) pendientes para tus próximos turnos.\n\n"
-                            f"<i>¿Deseas descansar o entrenar otra tanda de {SESSION_CARD_LIMIT} ahora mismo?</i>"
-                        ),
-                        reply_markup={
-                            "inline_keyboard": [
-                                [{"text": f"🔥 Otra tanda de {SESSION_CARD_LIMIT} tarjetas", "callback_data": "session:start"}]
-                            ]
-                        },
-                    )
-                else:
-                    await send_next_review_card(service, chat_id, step=step + 1)
-
-            return {"ok": True}
-
-        # 2. Mensajes normales
-        message = payload.get("message")
-        if not message:
-            return {"ok": True}
-
-        chat_id = message["chat"]["id"]
-        sender_id = str(message.get("from", {}).get("id"))
-
-        # Validar usuario autorizado
-        if allowed_id and sender_id != allowed_id:
-            logger.warning("Mensaje ignorado de usuario no autorizado: %s", sender_id)
-            await send_message(
-                chat_id=chat_id,
-                text=f"⛔ Acceso denegado. Tu chat ID es <code>{sender_id}</code>. Configúralo en ALLOWED_CHAT_ID.",
-            )
-            return {"ok": True}
-
-        raw_text = (message.get("text") or "").strip()
-        if not raw_text:
-            return {"ok": True}
-
-        # Comandos
-        if raw_text.startswith("/start") or raw_text.startswith("/help") or raw_text.startswith("/ayuda"):
-            msg_text = (
-                f"👋 <b>¡Entrenador SRS Multidisciplinar activo en la nube!</b>\n\n"
-                f"Tu Chat ID es: <code>{sender_id}</code>\n"
-                f"Base de datos: <b>PostgreSQL en la Nube</b>\n\n"
-                f"<b>Uso rápido:</b>\n"
-                f"• Escribe el nombre de un concepto (ej. <code>REST</code>, <code>Circuit Breaker</code>, <code>Proceso (Derecho Procesal)</code>) y la IA generará la ficha canónica y te sugerirá otros ámbitos donde aplica.\n"
-                f"• Usa /repasar para iniciar una tanda dosificada de {SESSION_CARD_LIMIT} tarjetas.\n"
-                f"• Usa /stats para ver tus métricas."
-            )
-            await send_message(chat_id=chat_id, text=msg_text)
-            return {"ok": True}
-
-        if raw_text.startswith("/stats"):
-            st = service.stats()
-            msg_text = (
-                f"📊 <b>ESTADÍSTICAS DEL GLOSARIO (PostgreSQL)</b>\n\n"
-                f"📚 Términos totales: <b>{st['total_terms']}</b>\n"
-                f"🏷️ Categorías: <b>{st['total_categories']}</b>\n"
-                f"🧠 Tarjetas pendientes hoy: <b>{st['due_today']}</b> (en tandas de {SESSION_CARD_LIMIT})\n"
-                f"✅ Repasadas hoy: <b>{st['reviewed_today']}</b>\n"
-                f"🤖 Enriquecedor IA: <b>{'Activo' if st['ai_available'] else 'Sin API Key'}</b>"
-            )
-            await send_message(chat_id=chat_id, text=msg_text)
-            return {"ok": True}
-
-        if raw_text.startswith("/repasar") or raw_text.startswith("/entrenar"):
-            await send_next_review_card(service, chat_id, step=1)
-            return {"ok": True}
-
-        # Captura de término con IA
-        await call_telegram_api("sendChatAction", {"chat_id": chat_id, "action": "typing"})
-        try:
-            result = service.capture_term(raw_text)
-            reply = format_captured_term(result)
-            await send_message(chat_id=chat_id, text=reply, reply_markup=keyboard_captured_term(result))
-        except InvalidTermError as e:
-            await send_message(
-                chat_id=chat_id,
-                text=(
-                    f"💬 <b>No se guardó en el glosario:</b>\n"
-                    f"{escape_html(str(e))}\n\n"
-                    f"<i>💡 Escribe un concepto técnico o académico (ej. <code>Event Sourcing</code>, "
-                    f"<code>Usucapión (Derecho)</code>) o usa /repasar para entrenar tus tarjetas.</i>"
-                ),
-            )
-        except RuntimeError as e:
-            await send_message(chat_id=chat_id, text=f"⚠️ Configuración: {escape_html(str(e))}")
-        except EnrichmentError as e:
-            await send_message(chat_id=chat_id, text=f"❌ Error con Gemini: {escape_html(str(e))}")
-        except Exception as e:
-            logger.exception("Error capturando término")
-            await send_message(chat_id=chat_id, text=f"❌ Ocurrió un error inesperado: {escape_html(str(e))}")
-
+        # Responder a Telegram inmediatamente (< 5ms) y procesar en segundo plano para evitar timeouts y reintentos
+        background_tasks.add_task(_handle_update_safe, payload, service_factory, update_id)
         return {"ok": True}
 
     return router

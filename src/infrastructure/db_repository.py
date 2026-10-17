@@ -378,8 +378,11 @@ class PostgresGlossaryRepository:
     def list_due_term_ids(self, today: date, limit: Optional[int] = None) -> list[int]:
         query = """SELECT term_id FROM srs_state
                    WHERE next_review_date <= %s
-                   ORDER BY next_review_date, ease_factor, term_id"""
-        params = [today]
+                   ORDER BY CASE WHEN last_reviewed_at IS NOT NULL AND DATE(last_reviewed_at) = %s THEN 1 ELSE 0 END ASC,
+                            next_review_date ASC,
+                            ease_factor ASC,
+                            term_id ASC"""
+        params = [today, today]
         if limit:
             query += " LIMIT %s"
             params.append(limit)

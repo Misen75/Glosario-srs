@@ -160,7 +160,15 @@ class InMemoryRepository:
         self.srs_states[s.term_id] = s
 
     def list_due_term_ids(self, today: date, limit: int | None = None) -> list[int]:
-        due = [tid for tid, s in self.srs_states.items() if s.next_review_date <= today]
+        def sort_key(item):
+            tid, s = item
+            reviewed_today = 1 if (s.last_reviewed_at and s.last_reviewed_at.date() == today) else 0
+            return (reviewed_today, s.next_review_date, s.ease_factor, tid)
+
+        due = [
+            tid for tid, s in sorted(self.srs_states.items(), key=sort_key)
+            if s.next_review_date <= today
+        ]
         return due[:limit] if limit else due
 
     def count_due(self, today: date) -> int:
@@ -196,6 +204,12 @@ class TestCloudEndpoints(unittest.TestCase):
 
         from src.interfaces.web_routes import _failed_pin_attempts
         _failed_pin_attempts.clear()
+
+        from src.interfaces.webhook_routes import clear_update_id_cache
+        clear_update_id_cache()
+
+        from src.interfaces.cron_routes import reset_cron_cooldown
+        reset_cron_cooldown()
 
         self.client = TestClient(app)
 
@@ -400,6 +414,74 @@ class TestCloudEndpoints(unittest.TestCase):
         t2 = self.repo.add_term(c_prog.id, d_prog)
         self.assertNotEqual(t1.id, t2.id)
         self.assertEqual(len(self.repo.find_terms_by_name("REST")), 2)
+
+    def test_forgotten_card_requeued_to_back_of_session(self):
+        cat = self.repo.get_or_create_category(
+            "Arquitectura", "Patrones", "Patrones GoF", ZoomLevel.MEDIO
+        )
+        d1 = NewTermDraft("Adapter", "Arquitectura", "Patrones", "desc", ZoomLevel.MEDIO, "def 1", "analog 1", "trade 1")
+        d2 = NewTermDraft("Bridge", "Arquitectura", "Patrones", "desc", ZoomLevel.MEDIO, "def 2", "analog 2", "trade 2")
+        today = date(2026, 10, 17)
+        t1 = self.repo.add_term(cat.id, d1, today=today)
+        t2 = self.repo.add_term(cat.id, d2, today=today)
+
+        # 1. Primera tarjeta entregada es t1 (Adapter)
+        first_due = self.service.due_cards(today=today, limit=1)
+        self.assertEqual(len(first_due), 1)
+        self.assertEqual(first_due[0].term.id, t1.id)
+
+        # 2. Calificar t1 como OLVIDADO
+        now = datetime(2026, 10, 17, 10, 0, 0)
+        self.service.review(t1.id, Rating.FORGOTTEN, now=now)
+
+        # 3. La siguiente tarjeta NO debe ser t1 de nuevo: debe ser t2 (Bridge)!
+        next_due = self.service.due_cards(today=today, limit=1)
+        self.assertEqual(len(next_due), 1)
+        self.assertEqual(next_due[0].term.id, t2.id, "Una tarjeta olvidada debe ir al final de la cola de hoy")
+
+        # 4. Calificar t2 como DOMINADO
+        self.service.review(t2.id, Rating.MASTERED, now=now)
+
+        # 5. Ahora que t2 ya no está pendiente, t1 vuelve a presentarse para completar su ciclo
+        re_due = self.service.due_cards(today=today, limit=1)
+        self.assertEqual(len(re_due), 1)
+        self.assertEqual(re_due[0].term.id, t1.id)
+
+    def test_telegram_webhook_idempotency_deduplication(self):
+        payload = {
+            "update_id": 77777,
+            "message": {
+                "message_id": 50,
+                "chat": {"id": 1234},
+                "from": {"id": 1234},
+                "text": "/stats"
+            }
+        }
+        # Primer envío -> 200 OK
+        r1 = self.client.post("/api/telegram/webhook", json=payload)
+        self.assertEqual(r1.status_code, 200)
+
+        # Segundo envío idéntico (reintento simulado de Telegram) -> ignorado
+        r2 = self.client.post("/api/telegram/webhook", json=payload)
+        self.assertEqual(r2.status_code, 200)
+        self.assertEqual(r2.json().get("status"), "duplicate_ignored")
+
+    def test_cron_cooldown_prevents_spam_triggers(self):
+        from src.config import settings
+        settings.CRON_SECRET = "secret_cron_cooldown"
+        settings.TELEGRAM_CHAT_ID = "123456"
+        os.environ["CRON_SECRET"] = "secret_cron_cooldown"
+        os.environ["TELEGRAM_CHAT_ID"] = "123456"
+
+        # 1. Primer trigger -> procesado
+        r1 = self.client.post("/api/cron/trigger-srs", headers={"CRON_SECRET": "secret_cron_cooldown"})
+        self.assertEqual(r1.status_code, 200)
+        self.assertFalse(r1.json().get("cooldown"))
+
+        # 2. Segundo trigger inmediato -> omitido por cooldown
+        r2 = self.client.post("/api/cron/trigger-srs", headers={"CRON_SECRET": "secret_cron_cooldown"})
+        self.assertEqual(r2.status_code, 200)
+        self.assertTrue(r2.json().get("cooldown"))
 
 
 if __name__ == "__main__":
