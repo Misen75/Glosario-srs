@@ -19,7 +19,10 @@
       focused_mode: true,
       theme: localStorage.getItem("glosario_srs_theme") || "light",
       step_by_step_reveal: false,
+      active_category_ids: [],
     },
+    users: [],
+    bi: null,
   };
 
   // Zoom helpers
@@ -88,6 +91,16 @@
     adminSearch: document.getElementById("admin-search"),
     adminCatFilter: document.getElementById("admin-cat-filter"),
     adminRecordsList: document.getElementById("admin-records-list"),
+    studyCatsSelector: document.getElementById("study-categories-selector"),
+    btnCatsAll: document.getElementById("btn-cats-all"),
+    btnSaveCats: document.getElementById("btn-save-cats"),
+    adminUsersSection: document.getElementById("admin-users-section"),
+    formAdminUser: document.getElementById("form-admin-user"),
+    adminUsersList: document.getElementById("admin-users-list"),
+    adminBiSection: document.getElementById("admin-bi-section"),
+    btnRefreshBi: document.getElementById("btn-refresh-bi"),
+    btnExportCsv: document.getElementById("btn-export-csv"),
+    biDashboard: document.getElementById("bi-dashboard"),
 
     // Diálogos
     dlgCat: document.getElementById("dlg-category"),
@@ -275,7 +288,9 @@
       renderTermsTable();
     } else if (viewName === "settings") {
       syncSettingsUI();
+      renderStudyCategorySelector();
       renderAdminRecords();
+      loadAdminData();
     }
   }
 
@@ -325,6 +340,7 @@
       renderGuide();
       populateCategoryFilter();
       renderTermsTable();
+      renderStudyCategorySelector();
       renderAdminRecords();
       updateStatsUI();
       await loadDueCards();
@@ -537,9 +553,15 @@
       }
 
       dom.addStatus.className = "add-status success";
+      const createdCount = Array.isArray(data.created_cards) ? data.created_cards.length : (data.created ? 1 : 0);
       if (data.created) {
-        dom.addStatus.textContent = `¡Término "${data.card.term}" añadido con éxito!`;
-        showToast(`Término "${data.card.term}" agregado al glosario.`);
+        dom.addStatus.textContent = createdCount > 1
+          ? `¡Término "${data.card.term}" añadido automáticamente en ${createdCount} ámbitos!`
+          : `¡Término "${data.card.term}" añadido con éxito!`;
+        showToast(`"${data.card.term}" registrado (${createdCount || 1} ámbito(s)).`);
+      } else if (data.from_canonical_cache) {
+        dom.addStatus.textContent = `⚡ "${data.card.term}" asignado desde el Catálogo Canónico ($0 IA).`;
+        showToast(`"${data.card.term}" asignado desde el catálogo global.`);
       } else {
         dom.addStatus.textContent = `El término "${data.card.term}" ya existía en el glosario.`;
       }
@@ -918,6 +940,240 @@
 
   if (dom.adminSearch) dom.adminSearch.addEventListener("input", renderAdminRecords);
   if (dom.adminCatFilter) dom.adminCatFilter.addEventListener("change", renderAdminRecords);
+
+  // --- Selección de Áreas y Categorías a Estudiar (active_category_ids) ---
+  function renderStudyCategorySelector() {
+    if (!dom.studyCatsSelector) return;
+    const activeIds = Array.isArray(state.settings.active_category_ids) ? state.settings.active_category_ids : [];
+    const allSelected = activeIds.length === 0;
+
+    if (state.areas.length === 0) {
+      dom.studyCatsSelector.innerHTML = `<div class="admin-empty">Aún no hay categorías registradas.</div>`;
+      return;
+    }
+
+    dom.studyCatsSelector.innerHTML = state.areas.map(area => {
+      const checks = (area.categories || []).map(c => {
+        const checked = allSelected || activeIds.includes(c.id);
+        return `
+          <label class="study-cat-check">
+            <input type="checkbox" class="chk-study-cat" value="${c.id}" ${checked ? "checked" : ""}>
+            <span><b>${escapeHtml(c.name)}</b> <small>(${c.term_count || 0} térm · Zoom ${c.zoom_level})</small></span>
+          </label>
+        `;
+      }).join("");
+      return `
+        <div class="study-area-group">
+          <div class="study-area-title">📍 ${escapeHtml(area.name)}</div>
+          <div class="study-cats-list">${checks}</div>
+        </div>
+      `;
+    }).join("");
+  }
+
+  if (dom.btnCatsAll) {
+    dom.btnCatsAll.addEventListener("click", () => {
+      if (!dom.studyCatsSelector) return;
+      const boxes = dom.studyCatsSelector.querySelectorAll(".chk-study-cat");
+      const allChecked = Array.from(boxes).every(b => b.checked);
+      boxes.forEach(b => { b.checked = !allChecked; });
+    });
+  }
+
+  if (dom.btnSaveCats) {
+    dom.btnSaveCats.addEventListener("click", async () => {
+      if (!dom.studyCatsSelector) return;
+      const boxes = Array.from(dom.studyCatsSelector.querySelectorAll(".chk-study-cat"));
+      const checkedIds = boxes.filter(b => b.checked).map(b => parseInt(b.value, 10));
+      // Si están todas marcadas o ninguna marcada, guardamos [] (= estudiar todo el catálogo sin restricción)
+      const payloadIds = (checkedIds.length === boxes.length || checkedIds.length === 0) ? [] : checkedIds;
+      dom.btnSaveCats.disabled = true;
+      try {
+        const updated = await fetchJsonWithPin("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ active_category_ids: payloadIds }),
+        });
+        state.settings = { ...state.settings, ...updated };
+        renderStudyCategorySelector();
+        showToast("🎯 Selección de Áreas/Categorías de estudio guardada");
+        await loadData();
+      } catch (err) {
+        showToast("Error guardando selección: " + err.message);
+      } finally {
+        dom.btnSaveCats.disabled = false;
+      }
+    });
+  }
+
+  // --- Gestión Multi-Usuario y Business Intelligence (Admin) ---
+  async function loadAdminData() {
+    const isAdmin = !state.stats || !state.stats.current_user || state.stats.current_user.is_admin !== false;
+    if (dom.adminUsersSection) dom.adminUsersSection.hidden = !isAdmin;
+    if (dom.adminBiSection) dom.adminBiSection.hidden = !isAdmin;
+    if (!isAdmin) return;
+
+    try {
+      const [usersRes, biRes] = await Promise.all([
+        fetchJsonWithPin("/api/admin/users").catch(() => []),
+        fetchJsonWithPin("/api/admin/bi").catch(() => null),
+      ]);
+      state.users = Array.isArray(usersRes) ? usersRes : [];
+      state.bi = biRes;
+      renderAdminUsers();
+      renderBiDashboard();
+    } catch (err) {
+      console.warn("Error cargando paneles admin:", err);
+    }
+  }
+
+  function renderAdminUsers() {
+    if (!dom.adminUsersList) return;
+    if (!state.users || state.users.length === 0) {
+      dom.adminUsersList.innerHTML = `<div class="admin-empty">Solo Administrador Principal activo. Agrega usuarios arriba para habilitar multi-tenancy.</div>`;
+      return;
+    }
+    dom.adminUsersList.innerHTML = state.users.map(u => {
+      const statusBadge = u.is_approved ? "✅ Aprobado" : "⛔ Bloqueado";
+      const delBtn = u.id !== 1
+        ? `<button type="button" class="btn btn-sm btn-danger" data-del-user="${u.id}">🗑️ Eliminar</button>`
+        : `<span class="admin-record-srs">Propietario</span>`;
+      return `
+        <div class="admin-record-item">
+          <div class="admin-record-info">
+            <div class="admin-record-title">
+              <b>#${u.id} · ${escapeHtml(u.display_name)}</b>
+              <span class="admin-record-cat">Rol: ${escapeHtml(u.role.toUpperCase())} · ${statusBadge}</span>
+              <span class="admin-record-srs">Chat ID: ${escapeHtml(u.telegram_chat_id || "—")} · Cuota IA hoy: ${u.ai_calls_today}/${u.daily_ai_limit}</span>
+            </div>
+          </div>
+          <div class="admin-record-actions">
+            ${delBtn}
+          </div>
+        </div>
+      `;
+    }).join("");
+
+    dom.adminUsersList.querySelectorAll("button[data-del-user]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const uid = parseInt(btn.dataset.delUser, 10);
+        if (!window.confirm(`¿Eliminar al usuario #${uid} y su progreso individual?`)) return;
+        try {
+          await fetchJsonWithPin(`/api/admin/users/${uid}`, { method: "DELETE" });
+          showToast(`Usuario #${uid} eliminado`);
+          await loadAdminData();
+        } catch (err) {
+          showToast("Error eliminando usuario: " + err.message);
+        }
+      });
+    });
+  }
+
+  if (dom.formAdminUser) {
+    dom.formAdminUser.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const nameEl = document.getElementById("usr-name");
+      const chatEl = document.getElementById("usr-chat-id");
+      const pinEl = document.getElementById("usr-pin");
+      const quotaEl = document.getElementById("usr-quota");
+      const roleEl = document.getElementById("usr-role");
+      const seedEl = document.getElementById("usr-seed");
+      try {
+        await fetchJsonWithPin("/api/admin/users", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            display_name: nameEl.value.trim(),
+            telegram_chat_id: chatEl.value.trim() || null,
+            web_pin: pinEl.value.trim() || null,
+            daily_ai_limit: parseInt(quotaEl.value, 10) || 10,
+            role: roleEl.value,
+            is_approved: true,
+            seed_all_terms: Boolean(seedEl && seedEl.checked),
+          }),
+        });
+        nameEl.value = "";
+        chatEl.value = "";
+        pinEl.value = "";
+        showToast("✅ Usuario guardado / aprobado correctamente");
+        await loadAdminData();
+      } catch (err) {
+        showToast("Error guardando usuario: " + err.message);
+      }
+    });
+  }
+
+  function renderBiDashboard() {
+    if (!dom.biDashboard) return;
+    const bi = state.bi;
+    if (!bi) {
+      dom.biDashboard.innerHTML = `<div class="admin-empty">Cargando métricas de Inteligencia de Negocios...</div>`;
+      return;
+    }
+
+    const areasHtml = (bi.area_breakdown || []).map(a => `
+      <tr>
+        <td><b>${escapeHtml(a.macro_area)}</b></td>
+        <td>${a.category_count || 0}</td>
+        <td>${a.term_count || 0}</td>
+        <td>${a.canonically_mastered_terms || 0}</td>
+        <td>${a.avg_interval_days ?? 0}d (EF ${a.avg_ease_factor ?? 2.5})</td>
+      </tr>
+    `).join("") || `<tr><td colspan="5">Sin datos</td></tr>`;
+
+    const hardestHtml = (bi.hardest_terms || []).slice(0, 8).map(t => `
+      <tr>
+        <td><b>${escapeHtml(t.term)}</b></td>
+        <td>${escapeHtml(t.macro_area)} · ${escapeHtml(t.category_name)}</td>
+        <td>${t.total_reviews || 0}</td>
+        <td>${t.forgotten_count || 0} (${t.forgotten_rate_pct ?? 0}%)</td>
+      </tr>
+    `).join("") || `<tr><td colspan="4">Sin repasos registrados aún</td></tr>`;
+
+    dom.biDashboard.innerHTML = `
+      <div class="bi-grid">
+        <div class="bi-box">
+          <h4>📊 Rendimiento por Macro-Área</h4>
+          <table class="bi-table">
+            <thead><tr><th>Macro-Área</th><th>Cat.</th><th>Térm.</th><th>Maduros ≥21d</th><th>Promedio SRS</th></tr></thead>
+            <tbody>${areasHtml}</tbody>
+          </table>
+        </div>
+        <div class="bi-box">
+          <h4>🔥 Conceptos con Mayor Tasa de Olvido (Puntos Ciegos)</h4>
+          <table class="bi-table">
+            <thead><tr><th>Término</th><th>Ámbito</th><th>Repasos</th><th>Olvidos (%)</th></tr></thead>
+            <tbody>${hardestHtml}</tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  }
+
+  if (dom.btnRefreshBi) {
+    dom.btnRefreshBi.addEventListener("click", () => loadAdminData());
+  }
+
+  if (dom.btnExportCsv) {
+    dom.btnExportCsv.addEventListener("click", async () => {
+      try {
+        const res = await fetchWithPin("/api/admin/bi/export-csv");
+        if (!res.ok) throw new Error("No se pudo exportar el CSV");
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "glosario_srs_bi_export.csv";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        showToast("📥 Base de datos BI exportada en CSV");
+      } catch (err) {
+        showToast("Error exportando CSV: " + err.message);
+      }
+    });
+  }
 
   function escapeHtml(str) {
     if (!str) return "";

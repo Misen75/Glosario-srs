@@ -196,22 +196,31 @@ class InMemoryRepository:
     def save_srs_state(self, s: SRSState):
         self.srs_states[s.term_id] = s
 
-    def get_active_focus_category_id(self, today: date) -> int | None:
+    def get_active_focus_category_id(
+        self,
+        today: date,
+        user_id: int = 1,
+        active_category_ids: list[int] | None = None,
+    ) -> int | None:
+        filter_ids = {int(cid) for cid in (active_category_ids or []) if cid}
         due_cats = []
         for c in self.categories.values():
+            if filter_ids and c.id not in filter_ids:
+                continue
             cat_terms = [t for t in self.terms.values() if t.category_id == c.id]
-            has_due = any(self.srs_states[t.id].next_review_date <= today for t in cat_terms)
+            has_due = any(self.srs_states[t.id].next_review_date <= today for t in cat_terms if t.id in self.srs_states)
             if not has_due:
                 continue
             reviewed_today_ts = [
                 self.srs_states[t.id].last_reviewed_at
                 for t in cat_terms
-                if self.srs_states[t.id].last_reviewed_at is not None
+                if t.id in self.srs_states
+                and self.srs_states[t.id].last_reviewed_at is not None
                 and self.srs_states[t.id].last_reviewed_at.date() == today
             ]
             has_review_today = 0 if reviewed_today_ts else 1
             latest_ts = max(reviewed_today_ts).timestamp() if reviewed_today_ts else 0.0
-            due_cats.append(((has_review_today, -latest_ts, c.macro_area, int(c.zoom_level), c.id), c.id))
+            due_cats.append(((has_review_today, -latest_ts, c.id, int(c.zoom_level)), c.id))
         if not due_cats:
             return None
         due_cats.sort(key=lambda item: item[0])
@@ -223,10 +232,16 @@ class InMemoryRepository:
         limit: int | None = None,
         focused: bool = True,
         category_id: int | None = None,
+        user_id: int = 1,
+        active_category_ids: list[int] | None = None,
+        distinct_terms: bool = True,
     ) -> list[int]:
+        filter_ids = {int(cid) for cid in (active_category_ids or []) if cid}
         target_cat_id = category_id
         if focused and target_cat_id is None:
-            target_cat_id = self.get_active_focus_category_id(today)
+            target_cat_id = self.get_active_focus_category_id(
+                today, user_id=user_id, active_category_ids=list(filter_ids)
+            )
             if target_cat_id is None:
                 return []
 
@@ -235,43 +250,204 @@ class InMemoryRepository:
             reviewed_today = 1 if (s.last_reviewed_at and s.last_reviewed_at.date() == today) else 0
             return (reviewed_today, s.next_review_date, s.ease_factor, tid)
 
-        due = [
+        raw_due = [
             tid for tid, s in sorted(self.srs_states.items(), key=sort_key)
-            if s.next_review_date <= today and (target_cat_id is None or self.terms[tid].category_id == target_cat_id)
+            if s.next_review_date <= today
+            and tid in self.terms
+            and (
+                (target_cat_id is not None and self.terms[tid].category_id == target_cat_id)
+                or (target_cat_id is None and (not filter_ids or self.terms[tid].category_id in filter_ids))
+            )
         ]
-        return due[:limit] if limit else due
+        if not distinct_terms:
+            return raw_due[:limit] if limit else raw_due
 
-    def count_due(self, today: date, category_id: int | None = None) -> int:
+        primary_ids = []
+        overflow_ids = []
+        seen_names = set()
+        for tid in raw_due:
+            norm = self.terms[tid].term.strip().casefold()
+            if norm not in seen_names:
+                seen_names.add(norm)
+                primary_ids.append(tid)
+            else:
+                overflow_ids.append(tid)
+        ordered = primary_ids + overflow_ids
+        return ordered[:limit] if limit else ordered
+
+    def count_due(
+        self,
+        today: date,
+        category_id: int | None = None,
+        user_id: int = 1,
+        active_category_ids: list[int] | None = None,
+    ) -> int:
+        filter_ids = {int(cid) for cid in (active_category_ids or []) if cid}
         return sum(
             1 for tid, s in self.srs_states.items()
-            if s.next_review_date <= today and (category_id is None or self.terms[tid].category_id == category_id)
+            if s.next_review_date <= today
+            and tid in self.terms
+            and (
+                (category_id is not None and self.terms[tid].category_id == category_id)
+                or (category_id is None and (not filter_ids or self.terms[tid].category_id in filter_ids))
+            )
         )
 
-    def append_review_log(self, log: ReviewLog):
+    def append_review_log(self, log: ReviewLog, user_id: int = 1):
         self.review_logs.append(log)
 
-    def count_reviews_on(self, day: date) -> int:
+    def count_reviews_on(self, day: date, user_id: int | None = None) -> int:
         return sum(1 for l in self.review_logs if l.reviewed_at.date() == day)
 
-    def get_settings(self) -> dict:
-        if not hasattr(self, "_settings"):
-            self._settings = {
+    def get_settings(self, user_id: int = 1) -> dict:
+        if not hasattr(self, "_settings_by_user"):
+            self._settings_by_user = {}
+        if user_id not in self._settings_by_user:
+            self._settings_by_user[user_id] = {
                 "session_card_limit": 5,
                 "maturity_threshold_days": 21,
                 "initial_ease_factor": 2.5,
                 "focused_mode": True,
                 "theme": "light",
                 "step_by_step_reveal": False,
+                "active_category_ids": [],
             }
-        return dict(self._settings)
+        return dict(self._settings_by_user[user_id])
 
-    def update_settings(self, **kwargs) -> dict:
-        cur = self.get_settings()
+    def update_settings(self, user_id: int = 1, **kwargs) -> dict:
+        cur = self.get_settings(user_id=user_id)
         for k, v in kwargs.items():
             if v is not None and k in cur:
                 cur[k] = v
-        self._settings = cur
-        return dict(self._settings)
+        self._settings_by_user[user_id] = cur
+        return dict(self._settings_by_user[user_id])
+
+    # --- Soporte Multi-Tenant & BI en memoria ---
+    def _ensure_users(self):
+        if not hasattr(self, "users"):
+            self.users = {
+                1: {
+                    "id": 1,
+                    "telegram_chat_id": None,
+                    "display_name": "Administrador Principal",
+                    "role": "admin",
+                    "web_pin": None,
+                    "daily_ai_limit": 9999,
+                    "ai_calls_today": 0,
+                    "ai_calls_date": date.today().isoformat(),
+                    "is_approved": True,
+                }
+            }
+            self._next_user_id = 2
+            self.user_unlinked: dict[int, set[int]] = {}
+
+    def list_users(self) -> list[dict]:
+        self._ensure_users()
+        return list(self.users.values())
+
+    def get_user_by_pin(self, pin: str) -> dict | None:
+        self._ensure_users()
+        for u in self.users.values():
+            if u.get("web_pin") == pin and u.get("is_approved"):
+                return dict(u)
+        return None
+
+    def get_user_by_chat_id(self, chat_id: str | int) -> dict | None:
+        self._ensure_users()
+        cid = str(chat_id).strip()
+        for u in self.users.values():
+            if u.get("telegram_chat_id") == cid:
+                return dict(u)
+        return None
+
+    def create_or_update_user(
+        self,
+        user_id: int | None = None,
+        telegram_chat_id: str | None = None,
+        display_name: str = "Usuario",
+        role: str = "user",
+        web_pin: str | None = None,
+        daily_ai_limit: int = 10,
+        is_approved: bool = True,
+    ) -> dict:
+        self._ensure_users()
+        uid = user_id or self._next_user_id
+        if user_id is None:
+            self._next_user_id += 1
+        u = {
+            "id": uid,
+            "telegram_chat_id": str(telegram_chat_id).strip() if telegram_chat_id else None,
+            "display_name": display_name,
+            "role": role,
+            "web_pin": web_pin,
+            "daily_ai_limit": int(daily_ai_limit),
+            "ai_calls_today": 0,
+            "ai_calls_date": date.today().isoformat(),
+            "is_approved": bool(is_approved),
+        }
+        self.users[uid] = u
+        return dict(u)
+
+    def delete_user(self, user_id: int) -> bool:
+        self._ensure_users()
+        if user_id == 1 or user_id not in self.users:
+            return False
+        del self.users[user_id]
+        return True
+
+    def check_and_consume_ai_quota(self, user_id: int = 1, today: date | None = None) -> tuple[bool, int, int]:
+        self._ensure_users()
+        u = self.users.get(user_id)
+        if not u:
+            return True, 0, 9999
+        if u["role"] == "admin":
+            u["ai_calls_today"] += 1
+            return True, u["ai_calls_today"], u["daily_ai_limit"]
+        if u["ai_calls_today"] >= u["daily_ai_limit"]:
+            return False, u["ai_calls_today"], u["daily_ai_limit"]
+        u["ai_calls_today"] += 1
+        return True, u["ai_calls_today"], u["daily_ai_limit"]
+
+    def ensure_user_terms(self, user_id: int, term_ids: list[int], initial_ease_factor: float = 2.5) -> int:
+        self._ensure_users()
+        return len(term_ids)
+
+    def unlink_user_term(self, user_id: int, term_id: int) -> bool:
+        self._ensure_users()
+        if term_id not in self.terms:
+            return False
+        self.user_unlinked.setdefault(user_id, set()).add(term_id)
+        return True
+
+    def get_bi_analytics(self) -> dict:
+        self._ensure_users()
+        return {
+            "total_reviews_logged": len(self.review_logs),
+            "hardest_terms": [
+                {
+                    "term_id": t.id,
+                    "term": t.term,
+                    "macro_area": self.categories[t.category_id].macro_area,
+                    "category_name": self.categories[t.category_id].name,
+                    "total_reviews": sum(1 for r in self.review_logs if r.term_id == t.id),
+                    "forgotten_count": sum(1 for r in self.review_logs if r.term_id == t.id and int(r.rating) == 1),
+                    "forgotten_rate_pct": 0.0,
+                }
+                for t in self.terms.values()
+            ],
+            "area_breakdown": [
+                {
+                    "macro_area": c.macro_area,
+                    "category_count": 1,
+                    "term_count": sum(1 for t in self.terms.values() if t.category_id == c.id),
+                    "avg_ease_factor": 2.5,
+                    "avg_interval_days": 0.0,
+                    "canonically_mastered_terms": 0,
+                }
+                for c in self.categories.values()
+            ],
+            "user_metrics": list(self.users.values()),
+        }
 
 
 class TestCloudEndpoints(unittest.TestCase):
@@ -764,6 +940,183 @@ class TestCloudEndpoints(unittest.TestCase):
         self.assertEqual(res_del.status_code, 200)
         self.assertTrue(res_del.json()["deleted"])
         self.assertIsNone(self.repo.get_term(t_old.id))
+
+    def test_auto_multi_scope_batch_capture_without_manual_buttons(self):
+        from src.interfaces.webhook_routes import format_captured_term, keyboard_captured_term
+
+        class MultiScopeFakeEnricher:
+            available = True
+
+            def enrich_all(self, term, categories, examples=(), target_scope=None, exclude_categories=()):
+                return [
+                    NewTermDraft(
+                        term="Contraprestativo",
+                        macro_area="Derecho",
+                        category_name="Derecho Civil y Obligaciones",
+                        category_description="Vínculos jurídicos patrimoniales",
+                        zoom_level=ZoomLevel.MEDIO,
+                        technical_definition="Acto o negocio jurídico que exige una prestación recíproca equivalente.",
+                        daily_analogy="Un contrato de compraventa donde entregas dinero a cambio de un bien.",
+                        tradeoff_when_not_to_use="No aplica en actos de liberalidad pura como la donación simple.",
+                        other_scopes=("Economía y Finanzas", "Derecho Tributario"),
+                    ),
+                    NewTermDraft(
+                        term="Contraprestativo",
+                        macro_area="Economía",
+                        category_name="Economía y Finanzas",
+                        category_description="Intercambio de bienes y flujos",
+                        zoom_level=ZoomLevel.MACRO,
+                        technical_definition="Transacción económica bilateral con flujo de valor en ambos sentidos.",
+                        daily_analogy="Pagar una suscripción mensual por acceso a un servicio.",
+                        tradeoff_when_not_to_use="No aplica en transferencias unilaterales o subsidios.",
+                        other_scopes=("Derecho Civil y Obligaciones", "Derecho Tributario"),
+                    ),
+                    NewTermDraft(
+                        term="Contraprestativo",
+                        macro_area="Derecho",
+                        category_name="Derecho Tributario",
+                        category_description="Tributos vinculados y tasas",
+                        zoom_level=ZoomLevel.MEDIO,
+                        technical_definition="Naturaleza de las tasas y precios públicos frente a los impuestos no vinculados.",
+                        daily_analogy="Pagar un peaje específico por usar una autopista.",
+                        tradeoff_when_not_to_use="No aplica a impuestos generales como el Impuesto a la Renta.",
+                        other_scopes=("Derecho Civil y Obligaciones", "Economía y Finanzas"),
+                    ),
+                ]
+
+        self.service.enricher = MultiScopeFakeEnricher()
+        result = self.service.capture_term("Contraprestativo")
+        self.assertTrue(result.created)
+        self.assertEqual(len(result.created_cards), 3)
+        self.assertEqual(len(result.existing_cards), 3)
+        self.assertEqual(result.suggested_scopes, ())
+        # Telegram jamás debe mostrar botones manuales de "➕ Ámbito"
+        self.assertIsNone(keyboard_captured_term(result))
+        msg_html = format_captured_term(result)
+        self.assertIn("3 ÁMBITOS", msg_html)
+        self.assertIn("Derecho Civil y Obligaciones", msg_html)
+        self.assertIn("Economía y Finanzas", msg_html)
+        self.assertIn("Derecho Tributario", msg_html)
+
+    def test_active_category_filter_and_no_focus_hijack_by_alphabetical_area(self):
+        today = date(2026, 10, 17)
+        # Usuario tiene primero Ingeniería de Software (id=1) y luego agrega Derecho (id=2, 'D' < 'I')
+        cat_sw = self.repo.get_or_create_category("Ingeniería de Software", "1. Principios", "Base", ZoomLevel.MICRO)
+        t_sw = self.repo.add_term(
+            cat_sw.id,
+            NewTermDraft("Cohesión", "Ingeniería de Software", "1. Principios", "Base", ZoomLevel.MICRO, "def", "analog", "trade"),
+            today=today,
+        )
+        cat_law = self.repo.get_or_create_category("Derecho", "Derecho Civil", "Leyes", ZoomLevel.MEDIO)
+        t_law = self.repo.add_term(
+            cat_law.id,
+            NewTermDraft("Contraprestativo", "Derecho", "Derecho Civil", "Leyes", ZoomLevel.MEDIO, "def", "analog", "trade"),
+            today=today,
+        )
+
+        # Aunque 'Derecho' empieza con D (antes que 'I'), el foco activo respeta el orden del currículo (cat_sw primero)
+        focus = self.service.active_focus(today=today)
+        self.assertEqual(focus["category_id"], cat_sw.id)
+
+        # Si el usuario en Configuración elige estudiar SOLO Derecho (active_category_ids = [cat_law.id]), el foco cambia a Derecho
+        self.service.update_settings(active_category_ids=[cat_law.id])
+        focus_filtered = self.service.active_focus(today=today)
+        self.assertEqual(focus_filtered["category_id"], cat_law.id)
+        due_filtered = self.service.due_cards(today=today, limit=5)
+        self.assertEqual([c.term.id for c in due_filtered], [t_law.id])
+
+    def test_canonical_cache_zero_ai_cost_and_daily_quota_and_roles(self):
+        ai_calls = {"count": 0}
+
+        class CountingEnricher:
+            available = True
+
+            def enrich_all(self, term, categories, examples=(), target_scope=None, exclude_categories=()):
+                ai_calls["count"] += 1
+                return [
+                    NewTermDraft(
+                        term=term,
+                        macro_area="Ingeniería de Software",
+                        category_name="Arquitectura",
+                        category_description="Desc",
+                        zoom_level=ZoomLevel.MACRO,
+                        technical_definition="Def canónica",
+                        daily_analogy="Analogía",
+                        tradeoff_when_not_to_use="Trade-off",
+                    )
+                ]
+
+        self.service.enricher = CountingEnricher()
+
+        # 1. Primera captura de "CQRS" llama a la IA (ai_calls = 1)
+        r1 = self.client.post("/api/terms", json={"term": "CQRS"})
+        self.assertEqual(r1.status_code, 201)
+        self.assertTrue(r1.json()["created"])
+        self.assertEqual(ai_calls["count"], 1)
+
+        # 2. Segunda captura de "CQRS" se sirve del Caché Canónico ($0 IA, ai_calls sigue en 1)
+        r2 = self.client.post("/api/terms", json={"term": "CQRS"})
+        self.assertEqual(r2.status_code, 201)
+        self.assertFalse(r2.json()["created"])
+        self.assertTrue(r2.json()["from_canonical_cache"])
+        self.assertEqual(ai_calls["count"], 1)
+
+        # 3. Crear usuario regular con cuota diaria = 1 y PIN propio
+        from src.config import settings
+        settings.WEB_ACCESS_PIN = "admin_pin_999"
+        u_res = self.client.post(
+            "/api/admin/users",
+            headers={"X-Web-Pin": "admin_pin_999"},
+            json={
+                "display_name": "Estudiante Invitado",
+                "telegram_chat_id": "555666",
+                "web_pin": "user_pin_111",
+                "role": "user",
+                "daily_ai_limit": 1,
+                "is_approved": True,
+                "seed_all_terms": True,
+            },
+        )
+        self.assertEqual(u_res.status_code, 200)
+
+        # Usuario regular NO puede regenerar el catálogo global con IA (403 Forbidden)
+        card_id = r1.json()["card"]["id"]
+        forbidden_reenrich = self.client.post(
+            f"/api/terms/{card_id}/reenrich",
+            headers={"X-Web-Pin": "user_pin_111"},
+            json={"scope": "Otro"},
+        )
+        self.assertEqual(forbidden_reenrich.status_code, 403)
+
+        # Usuario regular al eliminar solo desvincula de su mazo; el término sigue existiendo en el Catálogo Global
+        unlink_res = self.client.delete(f"/api/terms/{card_id}", headers={"X-Web-Pin": "user_pin_111"})
+        self.assertEqual(unlink_res.status_code, 200)
+        self.assertTrue(unlink_res.json()["unlinked_only"])
+        self.assertIsNotNone(self.repo.get_term(card_id))
+
+        # Usuario regular consume su única cuota diaria IA (1/1) -> 201 Created
+        q1 = self.client.post("/api/terms", headers={"X-Web-Pin": "user_pin_111"}, json={"term": "Saga Pattern"})
+        self.assertEqual(q1.status_code, 201)
+
+        # Segundo término nuevo con IA el mismo día supera su cuota (1/1) -> 429 Too Many Requests
+        q2 = self.client.post("/api/terms", headers={"X-Web-Pin": "user_pin_111"}, json={"term": "Outbox Pattern"})
+        self.assertEqual(q2.status_code, 429)
+
+    def test_business_intelligence_and_csv_export_endpoints(self):
+        cat = self.repo.get_or_create_category("Ingeniería de Software", "1. Principios", "Base", ZoomLevel.MICRO)
+        self.repo.add_term(
+            cat.id,
+            NewTermDraft("Idempotencia", "Ingeniería de Software", "1. Principios", "Base", ZoomLevel.MICRO, "def", "analog", "trade"),
+        )
+        bi_res = self.client.get("/api/admin/bi")
+        self.assertEqual(bi_res.status_code, 200)
+        self.assertIn("hardest_terms", bi_res.json())
+        self.assertIn("area_breakdown", bi_res.json())
+
+        csv_res = self.client.get("/api/admin/bi/export-csv")
+        self.assertEqual(csv_res.status_code, 200)
+        self.assertIn("text/csv", csv_res.headers["content-type"])
+        self.assertIn("Idempotencia", csv_res.text)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/icon.svg">
-  <link rel="stylesheet" href="/styles.css?v=2.6">
+  <link rel="stylesheet" href="/styles.css?v=2.7">
 </head>
 <body>
   <div class="container">
@@ -179,12 +179,27 @@
         </div>
       </div>
 
+      <!-- Tarjeta 2.5: Selección de Áreas y Categorías a Estudiar -->
+      <div class="settings-card" style="margin-top: 20px;">
+        <div class="admin-header">
+          <div>
+            <h3>🎯 Selección de Áreas y Categorías a Estudiar</h3>
+            <p class="settings-sub">La IA registra todas las interpretaciones posibles de cada término. Aquí eliges qué categorías y áreas deseas repasar activamente en tus tandas (si no marcas ninguna o marcas todas, se estudia todo el catálogo).</p>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button type="button" class="btn btn-sm" id="btn-cats-all">Seleccionar todas</button>
+            <button type="button" class="btn btn-sm btn-primary" id="btn-save-cats">💾 Guardar Selección</button>
+          </div>
+        </div>
+        <div id="study-categories-selector" class="study-cats-grid" style="margin-top: 12px;"></div>
+      </div>
+
       <!-- Tarjeta 3: Gestión de Registros (Reenviar a la IA o Eliminar) -->
       <div class="settings-card" style="margin-top: 20px;">
         <div class="admin-header">
           <div>
             <h3>🛠️ Gestión de Registros (Reenviar a la IA / Eliminar)</h3>
-            <p class="settings-sub">Regenera cualquier ficha con el estándar actual de la IA (definición rigurosa + todos sus ámbitos) o elimina registros.</p>
+            <p class="settings-sub">Regenera cualquier ficha con el estándar actual de la IA (solo Admin) o elimina/desvincula registros.</p>
           </div>
           <span class="badge-neutral" id="admin-count-badge">0 registros</span>
         </div>
@@ -195,6 +210,46 @@
         </div>
 
         <div id="admin-records-list" class="admin-records-list"></div>
+      </div>
+
+      <!-- Tarjeta 4: Gestión Multi-Usuario y Cuotas IA (Admin) -->
+      <div class="settings-card" id="admin-users-section" style="margin-top: 20px;">
+        <div class="admin-header">
+          <div>
+            <h3>👥 Gestión de Usuarios, Whitelist de Telegram y Cuotas IA</h3>
+            <p class="settings-sub">Aprueba usuarios por su Telegram Chat ID, asigna su PIN Web personal y limita sus generaciones diarias con IA para proteger tu API Key.</p>
+          </div>
+        </div>
+        <form id="form-admin-user" class="user-form-grid" style="margin-top: 12px;">
+          <input type="text" id="usr-name" placeholder="Nombre (ej. Carlos)" required maxlength="120">
+          <input type="text" id="usr-chat-id" placeholder="Telegram Chat ID (ej. 123456789)" maxlength="64">
+          <input type="text" id="usr-pin" placeholder="PIN Web personal (opcional)" maxlength="64">
+          <input type="number" id="usr-quota" placeholder="Cuota IA/día" min="0" max="9999" value="10" title="Límite diario de términos nuevos con IA">
+          <select id="usr-role">
+            <option value="user">Rol: Usuario (Lectura + SRS propio)</option>
+            <option value="admin">Rol: Admin (Control total)</option>
+          </select>
+          <label class="usr-seed-label" title="Copia las tarjetas actuales del catálogo global al mazo de este usuario">
+            <input type="checkbox" id="usr-seed" checked> Clonar catálogo actual
+          </label>
+          <button type="submit" class="btn btn-sm btn-primary">➕ Guardar / Aprobar Usuario</button>
+        </form>
+        <div id="admin-users-list" class="admin-records-list" style="margin-top: 12px;"></div>
+      </div>
+
+      <!-- Tarjeta 5: Inteligencia de Negocios (BI Centralizado) -->
+      <div class="settings-card" id="admin-bi-section" style="margin-top: 20px;">
+        <div class="admin-header">
+          <div>
+            <h3>📊 Inteligencia de Negocios (BI) y Analítica Centralizada</h3>
+            <p class="settings-sub">Métricas agregadas de dificultad terminológica, dominio por Macro-Área y exportación completa para BI (Excel / PowerBI).</p>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button type="button" class="btn btn-sm" id="btn-refresh-bi">🔄 Actualizar BI</button>
+            <button type="button" class="btn btn-sm btn-primary" id="btn-export-csv">📥 Exportar CSV (BI)</button>
+          </div>
+        </div>
+        <div id="bi-dashboard" style="margin-top: 12px;"></div>
       </div>
     </section>
   </div>
@@ -214,8 +269,8 @@
   <dialog id="dlg-add">
     <form id="form-add">
       <h2>Agregar término</h2>
-      <p class="muted">Escribe solo el nombre. La IA redactará la ficha con el mismo estilo del glosario.</p>
-      <input id="add-input" maxlength="80" placeholder="Ej. Outbox Pattern, Teorema CAP, CQRS" required autocomplete="off">
+      <p class="muted">Escribe solo el nombre. La IA generará automáticamente todas las interpretaciones canónicas del concepto.</p>
+      <input id="add-input" maxlength="80" placeholder="Ej. Outbox Pattern, Contraprestativo, Proceso" required autocomplete="off">
       <div id="add-status" class="add-status"></div>
       <div id="add-result"></div>
       <div class="dlg-actions">
@@ -240,6 +295,6 @@
   </dialog>
 
   <div class="toast" id="toast" hidden></div>
-  <script src="/app.js?v=2.6"></script>
+  <script src="/app.js?v=2.7"></script>
 </body>
 </html>

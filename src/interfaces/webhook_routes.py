@@ -20,7 +20,7 @@ import httpx
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from src.application.use_cases import GlossaryService, TermCard
+from src.application.use_cases import GlossaryService, QuotaExceededError, TermCard
 from src.config import settings
 from src.domain.models import Rating
 from src.infrastructure.ai_enricher import EnrichmentError, InvalidTermError
@@ -189,59 +189,59 @@ def format_card_back(card: TermCard) -> str:
 def format_captured_term(result) -> str:
     card = result.card
     tradeoff = card.term.tradeoff_when_not_to_use or "No especificado."
-    status_header = (
-        "✨ <b>¡NUEVA ACEPCIÓN AÑADIDA AL GLOSARIO!</b>"
-        if result.created
-        else "ℹ️ <b>EL TÉRMINO YA EXISTE EN ESTE ÁMBITO:</b>"
-    )
-    if result.new_category:
-        status_header += "\n<i>(Se creó una nueva categoría para agrupar este ámbito)</i>"
+    created_cards = getattr(result, "created_cards", ()) or ()
+    existing_cards = getattr(result, "existing_cards", ()) or ()
+    from_cache = bool(getattr(result, "from_canonical_cache", False))
 
-    other_cards = [c for c in getattr(result, "existing_cards", ()) if c.term.id != card.term.id]
+    if result.created and len(created_cards) > 1:
+        status_header = f"✨ <b>¡TÉRMINO REGISTRADO AUTOMÁTICAMENTE EN {len(created_cards)} ÁMBITOS!</b>"
+    elif result.created:
+        status_header = "✨ <b>¡NUEVA FICHA CANÓNICA AÑADIDA AL GLOSARIO!</b>"
+    elif from_cache:
+        status_header = f"⚡ <b>ASIGNADO DESDE EL CATÁLOGO CANÓNICO ($0 IA · {len(existing_cards)} ámbito(s)):</b>"
+    else:
+        status_header = "ℹ️ <b>EL TÉRMINO YA EXISTE EN ESTE ÁMBITO:</b>"
+
+    if result.new_category:
+        status_header += "\n<i>(Se estructuraron automáticamente las categorías correspondientes)</i>"
+
+    other_cards = [c for c in existing_cards if c.term.id != card.term.id]
     other_html = ""
     if other_cards:
-        items = "\n".join(
-            f"  • <b>{escape_html(c.category.name)}</b> ({escape_html(c.category.macro_area)}, Zoom {int(c.category.zoom_level)})"
-            for c in other_cards
+        items = []
+        for c in other_cards:
+            short_def = c.term.technical_definition
+            if len(short_def) > 130:
+                short_def = short_def[:127].rstrip() + "..."
+            items.append(
+                f"  • <b>{escape_html(c.category.macro_area)} › {escape_html(c.category.name)}</b> (Zoom {int(c.category.zoom_level)}):\n"
+                f"    <i>{escape_html(short_def)}</i>"
+            )
+        other_html = (
+            f"\n\n🗂️ <b>Todas las demás interpretaciones guardadas de «{escape_html(card.term.term)}» ({len(other_cards)}):</b>\n"
+            + "\n".join(items)
         )
-        other_html = f"\n\n🗂️ <b>Otras interpretaciones ya registradas de «{escape_html(card.term.term)}»:</b>\n{items}"
 
-    scopes_hint = ""
-    scopes = getattr(result, "suggested_scopes", ())
-    if scopes:
-        scopes_list_html = ", ".join(f"<code>{escape_html(s)}</code>" for s in scopes)
-        scopes_hint = (
-            f"\n\n🌐 <b>Ámbitos alternativos identificados ({len(scopes)}):</b> {scopes_list_html}\n"
-            f"🔍 <i>¿Deseas agregar la interpretación de <b>{escape_html(card.term.term)}</b> en otro ámbito? "
-            f"Toca un botón abajo o escribe <code>{escape_html(card.term.term)} (Ámbito)</code>:</i>"
-        )
+    settings_hint = (
+        "\n\n⚙️ <i>En <b>Configuración (Ajustes)</b> de la Web App puedes elegir qué Áreas y Categorías específicas deseas estudiar.</i>"
+    )
 
     return (
         f"{status_header}\n\n"
         f"📌 <b>{escape_html(card.term.term)}</b>\n"
-        f"🏷️ <b>Ámbito / Categoría:</b> {escape_html(card.category.name)} (Zoom {int(card.category.zoom_level)})\n"
+        f"🏷️ <b>Ámbito Principal:</b> {escape_html(card.category.name)} (Zoom {int(card.category.zoom_level)})\n"
         f"📍 <b>Área:</b> {escape_html(card.category.macro_area)}\n\n"
         f"📋 <b>Definición Técnica:</b>\n{escape_html(card.term.technical_definition)}\n\n"
         f"💡 <b>Analogía Cotidiana:</b>\n{escape_html(card.term.daily_analogy)}\n\n"
         f"⚠️ <b>Trade-off / Cuándo NO usarlo:</b>\n{escape_html(tradeoff)}"
         f"{other_html}"
-        f"{scopes_hint}"
+        f"{settings_hint}"
     )
 
 
 def keyboard_captured_term(result) -> Optional[dict]:
-    scopes = getattr(result, "suggested_scopes", ())
-    term_id = result.card.term.id
-    if not scopes or not term_id:
-        return None
-    rows = []
-    for s in scopes:
-        # Telegram callback_data max 64 bytes -> truncamos el nombre del scope de forma segura en UTF-8
-        safe_scope = s.strip().replace(":", " ")
-        while len(f"scope:{term_id}:{safe_scope}".encode("utf-8")) > 62:
-            safe_scope = safe_scope[:-1]
-        rows.append([{"text": f"➕ Ámbito: {s}", "callback_data": f"scope:{term_id}:{safe_scope}"}])
-    return {"inline_keyboard": rows}
+    """Sin botones manuales de ámbitos: el sistema registra todas las interpretaciones automáticamente."""
+    return None
 
 
 def keyboard_front(term_id: int, step: int = 1) -> dict:
@@ -273,9 +273,30 @@ def keyboard_back(service: GlossaryService, card: TermCard, step: int = 1) -> di
     }
 
 
+def resolve_telegram_user_id(service: GlossaryService, sender_id: str) -> Optional[int]:
+    """Determina el user_id autorizado para un remitente de Telegram:
+    1. Si coincide con ALLOWED_CHAT_ID / TELEGRAM_CHAT_ID (o no hay restricción configurada y es entorno de prueba), retorna user_id = 1 (Admin).
+    2. Si existe en la tabla `users` con `is_approved = True`, retorna su `id`.
+    3. En cualquier otro caso, retorna None (acceso denegado).
+    """
+    allowed_id = get_allowed_chat_id()
+    if allowed_id and sender_id == allowed_id:
+        return 1
+    if hasattr(service.repo, "get_user_by_chat_id"):
+        u = service.repo.get_user_by_chat_id(sender_id)
+        if u and u.get("is_approved"):
+            return int(u["id"])
+    if not allowed_id:
+        return 1
+    return None
+
+
 # ------------------------------------------------------------- Lógica de sesión SRS
-async def send_next_review_card(service: GlossaryService, chat_id: int | str, step: int = 1):
-    due = service.due_cards(limit=1)
+async def send_next_review_card(service: GlossaryService, chat_id: int | str, step: int = 1, user_id: int = 1):
+    try:
+        due = service.due_cards(limit=1, user_id=user_id)
+    except TypeError:
+        due = service.due_cards(limit=1)
     if not due:
         await send_message(
             chat_id=chat_id,
@@ -284,14 +305,23 @@ async def send_next_review_card(service: GlossaryService, chat_id: int | str, st
         )
         return
 
-    cfg = service.get_settings() if hasattr(service, "get_settings") else {}
+    try:
+        cfg = service.get_settings(user_id=user_id) if hasattr(service, "get_settings") else {}
+    except TypeError:
+        cfg = service.get_settings() if hasattr(service, "get_settings") else {}
     session_limit = int(cfg.get("session_card_limit", SESSION_CARD_LIMIT))
     focused_mode = bool(cfg.get("focused_mode", True))
 
     card = due[0]
-    total_due = service.count_due()
-    cat_due = service.count_due(category_id=card.category.id) if focused_mode else 0
-    cat_mastery = service.category_mastery(card.category.id) if (focused_mode and hasattr(service, "category_mastery")) else None
+    try:
+        total_due = service.count_due(user_id=user_id)
+        cat_due = service.count_due(category_id=card.category.id, user_id=user_id) if focused_mode else 0
+        cat_mastery = service.category_mastery(card.category.id, user_id=user_id) if (focused_mode and hasattr(service, "category_mastery")) else None
+    except TypeError:
+        total_due = service.count_due()
+        cat_due = service.count_due(category_id=card.category.id) if focused_mode else 0
+        cat_mastery = service.category_mastery(card.category.id) if (focused_mode and hasattr(service, "category_mastery")) else None
+
     m_score = cat_mastery["mastery_score"] if cat_mastery else None
     text = format_card_front(
         card,
@@ -311,18 +341,21 @@ async def send_next_review_card(service: GlossaryService, chat_id: int | str, st
 # ------------------------------------------------------------- Procesador de Updates
 async def process_telegram_update(payload: dict, service: GlossaryService):
     """Procesa un update de Telegram de forma desacoplada."""
-    allowed_id = get_allowed_chat_id()
-    cfg = service.get_settings() if hasattr(service, "get_settings") else {}
-    session_limit = int(cfg.get("session_card_limit", SESSION_CARD_LIMIT))
-
     # 1. Callback query (clic en botón inline)
     if "callback_query" in payload:
         cq = payload["callback_query"]
         cq_id = cq["id"]
-        user_id = str(cq["from"]["id"])
-        if allowed_id and user_id != allowed_id:
+        sender_id = str(cq["from"]["id"])
+        db_user_id = resolve_telegram_user_id(service, sender_id)
+        if db_user_id is None:
             await answer_callback_query(cq_id, "No tienes permiso para interactuar con este bot.")
             return
+
+        try:
+            cfg = service.get_settings(user_id=db_user_id) if hasattr(service, "get_settings") else {}
+        except TypeError:
+            cfg = service.get_settings() if hasattr(service, "get_settings") else {}
+        session_limit = int(cfg.get("session_card_limit", SESSION_CARD_LIMIT))
 
         data = cq.get("data", "")
         msg = cq.get("message", {})
@@ -332,31 +365,16 @@ async def process_telegram_update(payload: dict, service: GlossaryService):
         await answer_callback_query(cq_id)
 
         if data == "session:start" and chat_id:
-            await send_next_review_card(service, chat_id, step=1)
-
-        elif data.startswith("scope:") and chat_id:
-            parts = data.split(":", 2)
-            if len(parts) == 3:
-                term_id = int(parts[1])
-                target_scope = parts[2]
-                base_card = service.get_card(term_id)
-                if base_card:
-                    await call_telegram_api("sendChatAction", {"chat_id": chat_id, "action": "typing"})
-                    try:
-                        res = service.capture_term(base_card.term.term, target_scope=target_scope)
-                        await send_message(
-                            chat_id=chat_id,
-                            text=format_captured_term(res),
-                            reply_markup=keyboard_captured_term(res),
-                        )
-                    except Exception as e:
-                        await send_message(chat_id=chat_id, text=f"❌ Error generando ámbito: {escape_html(str(e))}")
+            await send_next_review_card(service, chat_id, step=1, user_id=db_user_id)
 
         elif data.startswith("rev:") and chat_id and message_id:
             parts = data.split(":")
             term_id = int(parts[1])
             step = int(parts[2]) if len(parts) > 2 else 1
-            card = service.get_card(term_id)
+            try:
+                card = service.get_card(term_id, user_id=db_user_id)
+            except TypeError:
+                card = service.get_card(term_id)
             if card:
                 await edit_message_text(
                     chat_id=chat_id,
@@ -371,9 +389,15 @@ async def process_telegram_update(payload: dict, service: GlossaryService):
             rating = Rating(int(parts[2]))
             step = int(parts[3]) if len(parts) > 3 else 1
 
-            card = service.get_card(term_id)
+            try:
+                card = service.get_card(term_id, user_id=db_user_id)
+            except TypeError:
+                card = service.get_card(term_id)
             prev_cat = card.category if card else None
-            new_state = service.review(term_id, rating, datetime.now())
+            try:
+                new_state = service.review(term_id, rating, datetime.now(), user_id=db_user_id)
+            except TypeError:
+                new_state = service.review(term_id, rating, datetime.now())
 
             rating_labels = {
                 Rating.FORGOTTEN: "❌ Olvidado (repetir hoy)",
@@ -389,39 +413,68 @@ async def process_telegram_update(payload: dict, service: GlossaryService):
             )
 
             if prev_cat and hasattr(service, "category_mastery"):
-                cm = service.category_mastery(prev_cat.id)
+                try:
+                    cm = service.category_mastery(prev_cat.id, user_id=db_user_id)
+                except TypeError:
+                    cm = service.category_mastery(prev_cat.id)
                 summary += f"📈 Maestría de «{escape_html(prev_cat.name)}»: <b>{cm['mastery_score']:.1f}%</b> ({cm['status_label']})\n"
 
-            next_focus = service.active_focus()
-            if prev_cat and next_focus and next_focus["category_id"] != prev_cat.id:
+            try:
+                next_focus = service.active_focus(user_id=db_user_id)
+            except TypeError:
+                next_focus = service.active_focus()
+            category_switched = bool(prev_cat and next_focus and next_focus["category_id"] != prev_cat.id)
+            if category_switched:
                 summary += (
-                    f"\n🏆 <b>¡Categoría «{escape_html(prev_cat.name)}» dominada hoy!</b>\n"
-                    f"➡️ Cambiando de enfoque a: <b>{escape_html(next_focus['macro_area'])} · {escape_html(next_focus['category'])}</b>\n"
+                    f"\n🏆 <b>¡Categoría «{escape_html(prev_cat.name)}» despejada hoy!</b>\n"
+                    f"➡️ Siguiente enfoque: <b>{escape_html(next_focus['macro_area'])} · {escape_html(next_focus['category'])}</b>\n"
                 )
 
             await edit_message_text(chat_id=chat_id, message_id=message_id, text=summary)
 
-            # Verificar si se alcanzó el tope saludable de la tanda
-            remaining = service.count_due()
-            if remaining == 0:
-                await send_next_review_card(service, chat_id, step=1)
-            elif step >= session_limit:
+            # Verificar siguiente tarjeta y evitar repetir el mismo término en la misma tanda
+            try:
+                remaining = service.count_due(user_id=db_user_id)
+                next_due_cards = service.due_cards(limit=1, user_id=db_user_id)
+            except TypeError:
+                remaining = service.count_due()
+                next_due_cards = service.due_cards(limit=1)
+
+            next_card = next_due_cards[0] if next_due_cards else None
+            same_term_consecutive = bool(
+                next_card
+                and card
+                and (
+                    next_card.term.id == card.term.id
+                    or next_card.term.term.strip().casefold() == card.term.term.strip().casefold()
+                )
+            )
+
+            if remaining == 0 or not next_card:
+                await send_next_review_card(service, chat_id, step=1, user_id=db_user_id)
+            elif step >= session_limit or same_term_consecutive:
+                reason_txt = (
+                    f"🎯 <b>¡Tanda de {step} tarjeta(s) completada!</b>\n"
+                    f"Se pausó la tanda para no repetir inmediatamente el mismo término («{escape_html(term_name)}»).\n"
+                    if same_term_consecutive and step < session_limit
+                    else f"🎯 <b>¡Tanda de {session_limit} tarjetas completada!</b>\n"
+                         f"Excelente enfoque. Dosificar el estudio evita la fatiga cognitiva.\n"
+                )
                 await send_message(
                     chat_id=chat_id,
                     text=(
-                        f"🎯 <b>¡Tanda de {session_limit} tarjetas completada!</b>\n"
-                        f"Excelente enfoque. Dosificar el estudio evita la fatiga cognitiva.\n"
+                        f"{reason_txt}"
                         f"📌 Quedan <b>{remaining}</b> tarjeta(s) pendientes para tus próximos turnos.\n\n"
-                        f"<i>¿Deseas descansar o entrenar otra tanda de {session_limit} ahora mismo?</i>"
+                        f"<i>¿Deseas descansar o entrenar otra tanda ahora mismo?</i>"
                     ),
                     reply_markup={
                         "inline_keyboard": [
-                            [{"text": f"🔥 Otra tanda de {session_limit} tarjetas", "callback_data": "session:start"}]
+                            [{"text": "🔥 Iniciar siguiente tanda", "callback_data": "session:start"}]
                         ]
                     },
                 )
             else:
-                await send_next_review_card(service, chat_id, step=step + 1)
+                await send_next_review_card(service, chat_id, step=step + 1, user_id=db_user_id)
 
         return
 
@@ -432,15 +485,26 @@ async def process_telegram_update(payload: dict, service: GlossaryService):
 
     chat_id = message["chat"]["id"]
     sender_id = str(message.get("from", {}).get("id"))
+    db_user_id = resolve_telegram_user_id(service, sender_id)
 
     # Validar usuario autorizado
-    if allowed_id and sender_id != allowed_id:
+    if db_user_id is None:
         logger.warning("Mensaje ignorado de usuario no autorizado: %s", sender_id)
         await send_message(
             chat_id=chat_id,
-            text=f"⛔ Acceso denegado. Tu chat ID es <code>{sender_id}</code>. Configúralo en ALLOWED_CHAT_ID.",
+            text=(
+                f"⛔ <b>Acceso restringido.</b>\n"
+                f"Tu Telegram Chat ID es: <code>{sender_id}</code>\n\n"
+                f"Solicita al Administrador que apruebe tu Chat ID en <b>⚙️ Ajustes → Gestión de Usuarios</b>."
+            ),
         )
         return
+
+    try:
+        cfg = service.get_settings(user_id=db_user_id) if hasattr(service, "get_settings") else {}
+    except TypeError:
+        cfg = service.get_settings() if hasattr(service, "get_settings") else {}
+    session_limit = int(cfg.get("session_card_limit", SESSION_CARD_LIMIT))
 
     raw_text = (message.get("text") or "").strip()
     if not raw_text:
@@ -453,15 +517,19 @@ async def process_telegram_update(payload: dict, service: GlossaryService):
             f"Tu Chat ID es: <code>{sender_id}</code>\n"
             f"Base de datos: <b>PostgreSQL en la Nube</b>\n\n"
             f"<b>Uso rápido:</b>\n"
-            f"• Escribe el nombre de un concepto (ej. <code>REST</code>, <code>Circuit Breaker</code>, <code>Proceso (Derecho Procesal)</code>) y la IA generará la ficha canónica y te sugerirá otros ámbitos donde aplica.\n"
-            f"• Usa /repasar para iniciar una tanda dosificada de {SESSION_CARD_LIMIT} tarjetas.\n"
+            f"• Escribe el nombre de un concepto (ej. <code>REST</code>, <code>Circuit Breaker</code>, <code>Contraprestativo</code>) y el sistema registrará automáticamente todas sus interpretaciones canónicas.\n"
+            f"• En <b>⚙️ Ajustes</b> de la Web App puedes elegir qué Áreas y Categorías estudiar.\n"
+            f"• Usa /repasar para iniciar una tanda dosificada de {session_limit} tarjetas.\n"
             f"• Usa /stats para ver tus métricas."
         )
         await send_message(chat_id=chat_id, text=msg_text)
         return
 
     if raw_text.startswith("/stats"):
-        st = service.stats()
+        try:
+            st = service.stats(user_id=db_user_id)
+        except TypeError:
+            st = service.stats()
         gm = st.get("global_mastery") or {}
         focus = st.get("active_focus")
         focus_line = ""
@@ -475,7 +543,7 @@ async def process_telegram_update(payload: dict, service: GlossaryService):
             f"📊 <b>ESTADÍSTICAS DEL GLOSARIO (PostgreSQL)</b>\n\n"
             f"📚 Términos totales: <b>{st['total_terms']}</b>\n"
             f"🏷️ Categorías: <b>{st['total_categories']}</b>\n"
-            f"🧠 Tarjetas pendientes hoy: <b>{st['due_today']}</b> (en tandas de {SESSION_CARD_LIMIT})\n"
+            f"🧠 Tarjetas pendientes hoy: <b>{st['due_today']}</b> (en tandas de {session_limit})\n"
             f"✅ Repasadas hoy: <b>{st['reviewed_today']}</b>\n"
             f"📈 Maestría Global: <b>{gm.get('mastery_score', 0.0):.1f}%</b> "
             f"(Maduras ≥21d: <b>{gm.get('mastered_count', 0)}/{gm.get('total_terms', 0)}</b>)\n"
@@ -486,15 +554,23 @@ async def process_telegram_update(payload: dict, service: GlossaryService):
         return
 
     if raw_text.startswith("/repasar") or raw_text.startswith("/entrenar"):
-        await send_next_review_card(service, chat_id, step=1)
+        await send_next_review_card(service, chat_id, step=1, user_id=db_user_id)
         return
 
-    # Captura de término con IA
+    # Captura automática de todas las interpretaciones con IA (o Caché Canónico $0)
     await call_telegram_api("sendChatAction", {"chat_id": chat_id, "action": "typing"})
     try:
-        result = service.capture_term(raw_text)
+        try:
+            result = service.capture_term(raw_text, user_id=db_user_id)
+        except TypeError:
+            result = service.capture_term(raw_text)
         reply = format_captured_term(result)
         await send_message(chat_id=chat_id, text=reply, reply_markup=keyboard_captured_term(result))
+    except QuotaExceededError as e:
+        await send_message(
+            chat_id=chat_id,
+            text=f"⏳ <b>Cuota diaria de IA alcanzada ({e.used}/{e.limit}):</b>\n{escape_html(str(e))}",
+        )
     except InvalidTermError as e:
         await send_message(
             chat_id=chat_id,
@@ -502,7 +578,7 @@ async def process_telegram_update(payload: dict, service: GlossaryService):
                 f"💬 <b>No se guardó en el glosario:</b>\n"
                 f"{escape_html(str(e))}\n\n"
                 f"<i>💡 Escribe un concepto técnico o académico (ej. <code>Event Sourcing</code>, "
-                f"<code>Usucapión (Derecho)</code>) o usa /repasar para entrenar tus tarjetas.</i>"
+                f"<code>Usucapión</code>) o usa /repasar para entrenar tus tarjetas.</i>"
             ),
         )
     except RuntimeError as e:

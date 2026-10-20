@@ -76,17 +76,60 @@ CREATE TABLE IF NOT EXISTS review_log (
 CREATE INDEX IF NOT EXISTS idx_srs_next_review ON srs_state(next_review_date);
 
 CREATE TABLE IF NOT EXISTS user_settings (
-    id                      INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    id                      INTEGER PRIMARY KEY DEFAULT 1,
     session_card_limit      INTEGER NOT NULL DEFAULT 5 CHECK (session_card_limit BETWEEN 1 AND 50),
     maturity_threshold_days INTEGER NOT NULL DEFAULT 21 CHECK (maturity_threshold_days BETWEEN 7 AND 180),
     initial_ease_factor     REAL NOT NULL DEFAULT 2.5 CHECK (initial_ease_factor BETWEEN 1.3 AND 4.0),
     focused_mode            BOOLEAN NOT NULL DEFAULT TRUE,
     theme                   VARCHAR(20) NOT NULL DEFAULT 'light',
     step_by_step_reveal     BOOLEAN NOT NULL DEFAULT FALSE,
+    active_category_ids     INTEGER[] NOT NULL DEFAULT '{}',
     updated_at              TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE user_settings DROP CONSTRAINT IF EXISTS user_settings_id_check;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS active_category_ids INTEGER[] NOT NULL DEFAULT '{}';
+
 INSERT INTO user_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS users (
+    id               SERIAL PRIMARY KEY,
+    telegram_chat_id VARCHAR(64) UNIQUE,
+    display_name     VARCHAR(120) NOT NULL DEFAULT 'Usuario',
+    role             VARCHAR(20) NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user')),
+    web_pin          VARCHAR(128),
+    daily_ai_limit   INTEGER NOT NULL DEFAULT 10,
+    ai_calls_today   INTEGER NOT NULL DEFAULT 0,
+    ai_calls_date    DATE NOT NULL DEFAULT CURRENT_DATE,
+    is_approved      BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at       TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO users (id, display_name, role, daily_ai_limit, is_approved)
+VALUES (1, 'Administrador Principal', 'admin', 9999, TRUE)
+ON CONFLICT (id) DO UPDATE SET role = 'admin', is_approved = TRUE;
+
+SELECT setval(pg_get_serial_sequence('users', 'id'), GREATEST((SELECT COALESCE(MAX(id), 1) FROM users), 1));
+
+CREATE TABLE IF NOT EXISTS user_srs_state (
+    user_id          INTEGER NOT NULL DEFAULT 1 REFERENCES users(id) ON DELETE CASCADE,
+    term_id          INTEGER NOT NULL REFERENCES terms(id) ON DELETE CASCADE,
+    interval_days    INTEGER NOT NULL DEFAULT 0,
+    ease_factor      REAL NOT NULL DEFAULT 2.5,
+    repetitions      INTEGER NOT NULL DEFAULT 0,
+    next_review_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    last_reviewed_at TIMESTAMP WITH TIME ZONE,
+    PRIMARY KEY (user_id, term_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_srs_next_review ON user_srs_state(user_id, next_review_date);
+
+INSERT INTO user_srs_state (user_id, term_id, interval_days, ease_factor, repetitions, next_review_date, last_reviewed_at)
+SELECT 1, term_id, interval_days, ease_factor, repetitions, next_review_date, last_reviewed_at
+FROM srs_state
+ON CONFLICT (user_id, term_id) DO NOTHING;
+
+ALTER TABLE review_log ADD COLUMN IF NOT EXISTS user_id INTEGER NOT NULL DEFAULT 1;
 
 -- =========================================================================
 -- Inmutabilidad reforzada con funciones y triggers nativos de PostgreSQL
@@ -334,6 +377,7 @@ class PostgresGlossaryRepository:
         draft: NewTermDraft,
         today: Optional[date] = None,
         initial_ease_factor: float = 2.5,
+        user_id: int = 1,
     ) -> Term:
         existing = self.find_term_by_name(draft.term, category_id=category_id)
         if existing:
@@ -360,7 +404,64 @@ class PostgresGlossaryRepository:
                        VALUES (%s, %s, %s)""",
                     (term_id, float(initial_ease_factor), today_date),
                 )
+                try:
+                    cur.execute(
+                        """INSERT INTO user_srs_state (user_id, term_id, ease_factor, next_review_date)
+                           VALUES (%s, %s, %s, %s)
+                           ON CONFLICT (user_id, term_id) DO NOTHING""",
+                        (int(user_id), term_id, float(initial_ease_factor), today_date),
+                    )
+                    if int(user_id) != 1:
+                        cur.execute(
+                            """INSERT INTO user_srs_state (user_id, term_id, ease_factor, next_review_date)
+                               VALUES (1, %s, %s, %s)
+                               ON CONFLICT (user_id, term_id) DO NOTHING""",
+                            (term_id, float(initial_ease_factor), today_date),
+                        )
+                except Exception:
+                    pass
         return self._to_term(t_row)
+
+    def ensure_user_terms(
+        self,
+        user_id: int,
+        term_ids: list[int] | tuple[int, ...],
+        today: Optional[date] = None,
+        initial_ease_factor: float = 2.5,
+    ) -> int:
+        """Asigna términos existentes del Catálogo Global al mazo SRS personal del usuario (Caché Canónico $0 IA)."""
+        if not term_ids:
+            return 0
+        today_date = today or date.today()
+        inserted = 0
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                for tid in term_ids:
+                    cur.execute(
+                        """INSERT INTO user_srs_state (user_id, term_id, ease_factor, next_review_date)
+                           VALUES (%s, %s, %s, %s)
+                           ON CONFLICT (user_id, term_id) DO NOTHING""",
+                        (int(user_id), int(tid), float(initial_ease_factor), today_date),
+                    )
+                    inserted += cur.rowcount
+                    if int(user_id) == 1:
+                        cur.execute(
+                            """INSERT INTO srs_state (term_id, ease_factor, next_review_date)
+                               VALUES (%s, %s, %s)
+                               ON CONFLICT (term_id) DO NOTHING""",
+                            (int(tid), float(initial_ease_factor), today_date),
+                        )
+        return inserted
+
+    def unlink_user_term(self, user_id: int, term_id: int) -> bool:
+        """Desvincula un término del mazo personal de un usuario sin borrarlo del Catálogo Canónico Global."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM user_srs_state WHERE user_id = %s AND term_id = %s",
+                    (int(user_id), int(term_id)),
+                )
+                return cur.rowcount >= 1
 
     def update_term_from_draft(self, term_id: int, category_id: int, draft: NewTermDraft) -> Optional[Term]:
         """Regeneración administrativa de un término con IA (con permiso transaccional explícito)."""
@@ -398,6 +499,7 @@ class PostgresGlossaryRepository:
             with conn.cursor() as cur:
                 cur.execute("SET LOCAL glosario.allow_admin_mutation = '1'")
                 cur.execute("DELETE FROM review_log WHERE term_id = %s", (term_id,))
+                cur.execute("DELETE FROM user_srs_state WHERE term_id = %s", (term_id,))
                 cur.execute("DELETE FROM srs_state WHERE term_id = %s", (term_id,))
                 cur.execute("DELETE FROM terms WHERE id = %s", (term_id,))
                 return cur.rowcount == 1
@@ -432,58 +534,101 @@ class PostgresGlossaryRepository:
                 return cur.fetchone()[0]
 
     # ----------------------------------------------------------------- SRS
-    def get_srs_state(self, term_id: int) -> Optional[SRSState]:
+    def get_srs_state(self, term_id: int, user_id: int = 1) -> Optional[SRSState]:
         with self._connect() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                if int(user_id) != 1:
+                    cur.execute(
+                        "SELECT * FROM user_srs_state WHERE user_id = %s AND term_id = %s",
+                        (int(user_id), term_id),
+                    )
+                    r = cur.fetchone()
+                    return self._to_srs(r) if r else None
                 cur.execute("SELECT * FROM srs_state WHERE term_id = %s", (term_id,))
                 r = cur.fetchone()
         return self._to_srs(r) if r else None
 
-    def list_srs_states(self) -> dict[int, SRSState]:
+    def list_srs_states(self, user_id: int = 1) -> dict[int, SRSState]:
         with self._connect() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("SELECT * FROM srs_state")
+                if int(user_id) != 1:
+                    cur.execute("SELECT * FROM user_srs_state WHERE user_id = %s", (int(user_id),))
+                else:
+                    cur.execute("SELECT * FROM srs_state")
                 rows = cur.fetchall()
         return {r["term_id"]: self._to_srs(r) for r in rows}
 
-    def save_srs_state(self, s: SRSState) -> None:
+    def save_srs_state(self, s: SRSState, user_id: int = 1) -> None:
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """UPDATE srs_state
-                       SET interval_days = %s,
-                           ease_factor = %s,
-                           repetitions = %s,
-                           next_review_date = %s,
-                           last_reviewed_at = %s
-                       WHERE term_id = %s""",
-                    (s.interval_days, s.ease_factor, s.repetitions, s.next_review_date,
-                     s.last_reviewed_at, s.term_id),
-                )
+                if int(user_id) == 1:
+                    cur.execute(
+                        """UPDATE srs_state
+                           SET interval_days = %s,
+                               ease_factor = %s,
+                               repetitions = %s,
+                               next_review_date = %s,
+                               last_reviewed_at = %s
+                           WHERE term_id = %s""",
+                        (s.interval_days, s.ease_factor, s.repetitions, s.next_review_date,
+                         s.last_reviewed_at, s.term_id),
+                    )
+                try:
+                    cur.execute(
+                        """INSERT INTO user_srs_state (user_id, term_id, interval_days, ease_factor, repetitions, next_review_date, last_reviewed_at)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s)
+                           ON CONFLICT (user_id, term_id) DO UPDATE SET
+                               interval_days = EXCLUDED.interval_days,
+                               ease_factor = EXCLUDED.ease_factor,
+                               repetitions = EXCLUDED.repetitions,
+                               next_review_date = EXCLUDED.next_review_date,
+                               last_reviewed_at = EXCLUDED.last_reviewed_at""",
+                        (int(user_id), s.term_id, s.interval_days, s.ease_factor,
+                         s.repetitions, s.next_review_date, s.last_reviewed_at),
+                    )
+                except Exception:
+                    pass
 
-    def get_active_focus_category_id(self, today: date) -> Optional[int]:
+    def get_active_focus_category_id(
+        self,
+        today: date,
+        user_id: int = 1,
+        active_category_ids: Optional[list[int]] = None,
+    ) -> Optional[int]:
         """Encuentra la categoría de foco activo:
-        1. Si hay una categoría con repasos HOY que aún tiene fichas pendientes hoy, se mantiene fija
+        1. Respeta `active_category_ids` si el usuario filtró en Configuración qué categorías desea estudiar.
+        2. Si hay una categoría con repasos HOY que aún tiene fichas pendientes hoy, se mantiene fija
            (protección de sesión activa para no interrumpir cuando se captura un término en otra categoría).
-        2. De lo contrario, selecciona la primera categoría pendiente por orden canónico (macro_area, zoom_level, id).
+        3. De lo contrario, selecciona la primera categoría pendiente por orden cronológico de currículo (`c.id ASC, c.zoom_level ASC`)
+           para que una categoría nueva en otra área (ej. 'Derecho') jamás secuestre el foco antes de terminar las actuales.
         """
+        filter_ids = [int(cid) for cid in (active_category_ids or []) if cid]
+        srs_table = "user_srs_state" if int(user_id) != 1 else "srs_state"
+        user_clause = "AND s.user_id = %s" if int(user_id) != 1 else ""
+        cat_clause = "AND c.id = ANY(%s)" if filter_ids else ""
+
+        params: list = [today]
+        if int(user_id) != 1:
+            params.append(int(user_id))
+        if filter_ids:
+            params.append(filter_ids)
+        params.extend([today, today])
+
+        query = f"""SELECT c.id
+                    FROM categories c
+                    JOIN terms t ON t.category_id = c.id
+                    JOIN {srs_table} s ON s.term_id = t.id
+                    WHERE s.next_review_date <= %s {user_clause} {cat_clause}
+                    GROUP BY c.id, c.macro_area, c.zoom_level
+                    ORDER BY CASE WHEN MAX(CASE WHEN s.last_reviewed_at IS NOT NULL AND DATE(s.last_reviewed_at) = %s THEN 1 ELSE 0 END) = 1 THEN 0 ELSE 1 END ASC,
+                             MAX(CASE WHEN s.last_reviewed_at IS NOT NULL AND DATE(s.last_reviewed_at) = %s THEN s.last_reviewed_at ELSE NULL END) DESC NULLS LAST,
+                             c.id ASC,
+                             c.zoom_level ASC
+                    LIMIT 1"""
+
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """SELECT c.id
-                       FROM categories c
-                       JOIN terms t ON t.category_id = c.id
-                       JOIN srs_state s ON s.term_id = t.id
-                       WHERE s.next_review_date <= %s
-                       GROUP BY c.id, c.macro_area, c.zoom_level
-                       ORDER BY CASE WHEN MAX(CASE WHEN s.last_reviewed_at IS NOT NULL AND DATE(s.last_reviewed_at) = %s THEN 1 ELSE 0 END) = 1 THEN 0 ELSE 1 END ASC,
-                                MAX(CASE WHEN s.last_reviewed_at IS NOT NULL AND DATE(s.last_reviewed_at) = %s THEN s.last_reviewed_at ELSE NULL END) DESC NULLS LAST,
-                                c.macro_area ASC,
-                                c.zoom_level ASC,
-                                c.id ASC
-                       LIMIT 1""",
-                    (today, today, today),
-                )
+                cur.execute(query, tuple(params))
                 row = cur.fetchone()
         return row[0] if row else None
 
@@ -493,79 +638,137 @@ class PostgresGlossaryRepository:
         limit: Optional[int] = None,
         focused: bool = True,
         category_id: Optional[int] = None,
+        user_id: int = 1,
+        active_category_ids: Optional[list[int]] = None,
+        distinct_terms: bool = True,
     ) -> list[int]:
+        filter_ids = [int(cid) for cid in (active_category_ids or []) if cid]
         target_cat_id = category_id
         if focused and target_cat_id is None:
-            target_cat_id = self.get_active_focus_category_id(today)
+            target_cat_id = self.get_active_focus_category_id(
+                today, user_id=user_id, active_category_ids=filter_ids
+            )
             if target_cat_id is None:
                 return []
 
-        if target_cat_id is not None:
-            query = """SELECT s.term_id
-                       FROM srs_state s
-                       JOIN terms t ON t.id = s.term_id
-                       WHERE s.next_review_date <= %s AND t.category_id = %s
-                       ORDER BY CASE WHEN s.last_reviewed_at IS NOT NULL AND DATE(s.last_reviewed_at) = %s THEN 1 ELSE 0 END ASC,
-                                s.next_review_date ASC,
-                                s.ease_factor ASC,
-                                s.term_id ASC"""
-            params = [today, target_cat_id, today]
-        else:
-            query = """SELECT term_id FROM srs_state
-                       WHERE next_review_date <= %s
-                       ORDER BY CASE WHEN last_reviewed_at IS NOT NULL AND DATE(last_reviewed_at) = %s THEN 1 ELSE 0 END ASC,
-                                next_review_date ASC,
-                                ease_factor ASC,
-                                term_id ASC"""
-            params = [today, today]
+        srs_table = "user_srs_state" if int(user_id) != 1 else "srs_state"
+        where_parts = ["s.next_review_date <= %s"]
+        params: list = [today]
 
-        if limit:
-            query += " LIMIT %s"
-            params.append(limit)
+        if int(user_id) != 1:
+            where_parts.append("s.user_id = %s")
+            params.append(int(user_id))
+
+        if target_cat_id is not None:
+            where_parts.append("t.category_id = %s")
+            params.append(int(target_cat_id))
+        elif filter_ids:
+            where_parts.append("t.category_id = ANY(%s)")
+            params.append(filter_ids)
+
+        params.append(today)
+        query = f"""SELECT s.term_id, t.term
+                    FROM {srs_table} s
+                    JOIN terms t ON t.id = s.term_id
+                    WHERE {' AND '.join(where_parts)}
+                    ORDER BY CASE WHEN s.last_reviewed_at IS NOT NULL AND DATE(s.last_reviewed_at) = %s THEN 1 ELSE 0 END ASC,
+                             s.next_review_date ASC,
+                             s.ease_factor ASC,
+                             s.term_id ASC"""
 
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(query, tuple(params))
                 rows = cur.fetchall()
-        return [r[0] for r in rows]
 
-    def count_due(self, today: date, category_id: Optional[int] = None) -> int:
+        if not distinct_terms:
+            ids = [r[0] for r in rows]
+            return ids[:limit] if limit else ids
+
+        # Priorizar conceptos con nombre distinto dentro de la misma tanda antes de repetir acepciones hermanas
+        primary_ids: list[int] = []
+        overflow_ids: list[int] = []
+        seen_names: set[str] = set()
+        for tid, t_name in rows:
+            norm = self.normalize_name(t_name or "")
+            if norm not in seen_names:
+                seen_names.add(norm)
+                primary_ids.append(tid)
+            else:
+                overflow_ids.append(tid)
+        ordered = primary_ids + overflow_ids
+        return ordered[:limit] if limit else ordered
+
+    def count_due(
+        self,
+        today: date,
+        category_id: Optional[int] = None,
+        user_id: int = 1,
+        active_category_ids: Optional[list[int]] = None,
+    ) -> int:
+        filter_ids = [int(cid) for cid in (active_category_ids or []) if cid]
+        srs_table = "user_srs_state" if int(user_id) != 1 else "srs_state"
+        where_parts = ["s.next_review_date <= %s"]
+        params: list = [today]
+
+        if int(user_id) != 1:
+            where_parts.append("s.user_id = %s")
+            params.append(int(user_id))
+
+        if category_id is not None:
+            where_parts.append("t.category_id = %s")
+            params.append(int(category_id))
+        elif filter_ids:
+            where_parts.append("t.category_id = ANY(%s)")
+            params.append(filter_ids)
+
         with self._connect() as conn:
             with conn.cursor() as cur:
-                if category_id is not None:
-                    cur.execute(
-                        """SELECT COUNT(*)
-                           FROM srs_state s
-                           JOIN terms t ON t.id = s.term_id
-                           WHERE s.next_review_date <= %s AND t.category_id = %s""",
-                        (today, category_id),
-                    )
-                else:
-                    cur.execute("SELECT COUNT(*) FROM srs_state WHERE next_review_date <= %s", (today,))
+                cur.execute(
+                    f"""SELECT COUNT(*)
+                        FROM {srs_table} s
+                        JOIN terms t ON t.id = s.term_id
+                        WHERE {' AND '.join(where_parts)}""",
+                    tuple(params),
+                )
                 return cur.fetchone()[0]
 
     # ---------------------------------------------------------- Review Log
-    def append_review_log(self, log: ReviewLog) -> None:
+    def append_review_log(self, log: ReviewLog, user_id: int = 1) -> None:
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """INSERT INTO review_log (term_id, rating, reviewed_at, interval_before, interval_after, ease_factor_after)
-                       VALUES (%s, %s, %s, %s, %s, %s)""",
-                    (log.term_id, int(log.rating), log.reviewed_at, log.interval_before,
-                     log.interval_after, log.ease_factor_after),
-                )
+                try:
+                    cur.execute(
+                        """INSERT INTO review_log (user_id, term_id, rating, reviewed_at, interval_before, interval_after, ease_factor_after)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                        (int(user_id), log.term_id, int(log.rating), log.reviewed_at, log.interval_before,
+                         log.interval_after, log.ease_factor_after),
+                    )
+                except Exception:
+                    cur.execute(
+                        """INSERT INTO review_log (term_id, rating, reviewed_at, interval_before, interval_after, ease_factor_after)
+                           VALUES (%s, %s, %s, %s, %s, %s)""",
+                        (log.term_id, int(log.rating), log.reviewed_at, log.interval_before,
+                         log.interval_after, log.ease_factor_after),
+                    )
 
-    def count_reviews_on(self, day: date) -> int:
+    def count_reviews_on(self, day: date, user_id: Optional[int] = None) -> int:
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT COUNT(*) FROM review_log WHERE DATE(reviewed_at) = %s",
-                    (day,),
-                )
+                if user_id is not None and int(user_id) != 1:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM review_log WHERE DATE(reviewed_at) = %s AND user_id = %s",
+                        (day, int(user_id)),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM review_log WHERE DATE(reviewed_at) = %s",
+                        (day,),
+                    )
                 return cur.fetchone()[0]
 
     # ------------------------------------------------------------- Settings
-    def get_settings(self) -> dict:
+    def get_settings(self, user_id: int = 1) -> dict:
         defaults = {
             "session_card_limit": 5,
             "maturity_threshold_days": 21,
@@ -573,14 +776,16 @@ class PostgresGlossaryRepository:
             "focused_mode": True,
             "theme": "light",
             "step_by_step_reveal": False,
+            "active_category_ids": [],
         }
         try:
             with self._connect() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                    cur.execute("SELECT * FROM user_settings WHERE id = 1")
+                    cur.execute("SELECT * FROM user_settings WHERE id = %s", (int(user_id),))
                     r = cur.fetchone()
                     if not r:
                         return defaults
+                    raw_active = r.get("active_category_ids") or []
                     return {
                         "session_card_limit": int(r["session_card_limit"]),
                         "maturity_threshold_days": int(r["maturity_threshold_days"]),
@@ -588,20 +793,23 @@ class PostgresGlossaryRepository:
                         "focused_mode": bool(r["focused_mode"]),
                         "theme": str(r["theme"] or "light"),
                         "step_by_step_reveal": bool(r["step_by_step_reveal"]),
+                        "active_category_ids": [int(x) for x in raw_active if x is not None],
                     }
         except Exception:
             return defaults
 
-    def update_settings(self, **kwargs) -> dict:
-        current = self.get_settings()
+    def update_settings(self, user_id: int = 1, **kwargs) -> dict:
+        current = self.get_settings(user_id=user_id)
         merged = {**current, **{k: v for k, v in kwargs.items() if v is not None and k in current}}
+        active_ids = [int(x) for x in (merged.get("active_category_ids") or []) if x is not None]
         with self._connect() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute(
                     """INSERT INTO user_settings (
                            id, session_card_limit, maturity_threshold_days,
-                           initial_ease_factor, focused_mode, theme, step_by_step_reveal, updated_at
-                       ) VALUES (1, %s, %s, %s, %s, %s, %s, NOW())
+                           initial_ease_factor, focused_mode, theme, step_by_step_reveal,
+                           active_category_ids, updated_at
+                       ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
                        ON CONFLICT (id) DO UPDATE SET
                            session_card_limit = EXCLUDED.session_card_limit,
                            maturity_threshold_days = EXCLUDED.maturity_threshold_days,
@@ -609,15 +817,245 @@ class PostgresGlossaryRepository:
                            focused_mode = EXCLUDED.focused_mode,
                            theme = EXCLUDED.theme,
                            step_by_step_reveal = EXCLUDED.step_by_step_reveal,
+                           active_category_ids = EXCLUDED.active_category_ids,
                            updated_at = NOW()
                        RETURNING *""",
                     (
+                        int(user_id),
                         int(merged["session_card_limit"]),
                         int(merged["maturity_threshold_days"]),
                         float(merged["initial_ease_factor"]),
                         bool(merged["focused_mode"]),
                         str(merged["theme"]),
                         bool(merged["step_by_step_reveal"]),
+                        active_ids,
                     ),
                 )
-        return self.get_settings()
+        return self.get_settings(user_id=user_id)
+
+    # --------------------------------------------------- Multi-Tenant & Usuarios
+    @staticmethod
+    def _to_user_dict(r: dict) -> dict:
+        return {
+            "id": int(r["id"]),
+            "telegram_chat_id": r.get("telegram_chat_id"),
+            "display_name": r.get("display_name") or "Usuario",
+            "role": r.get("role") or "user",
+            "web_pin": r.get("web_pin"),
+            "daily_ai_limit": int(r.get("daily_ai_limit") or 10),
+            "ai_calls_today": int(r.get("ai_calls_today") or 0),
+            "ai_calls_date": r["ai_calls_date"].isoformat() if isinstance(r.get("ai_calls_date"), date) else str(r.get("ai_calls_date") or ""),
+            "is_approved": bool(r.get("is_approved", False)),
+            "created_at": r["created_at"].isoformat() if isinstance(r.get("created_at"), datetime) else str(r.get("created_at") or ""),
+        }
+
+    def list_users(self) -> list[dict]:
+        try:
+            with self._connect() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute("SELECT * FROM users ORDER BY id ASC")
+                    return [self._to_user_dict(r) for r in cur.fetchall()]
+        except Exception:
+            return []
+
+    def get_user(self, user_id: int) -> Optional[dict]:
+        try:
+            with self._connect() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute("SELECT * FROM users WHERE id = %s", (int(user_id),))
+                    r = cur.fetchone()
+                    return self._to_user_dict(r) if r else None
+        except Exception:
+            return None
+
+    def get_user_by_chat_id(self, chat_id: str | int) -> Optional[dict]:
+        try:
+            with self._connect() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute("SELECT * FROM users WHERE telegram_chat_id = %s", (str(chat_id).strip(),))
+                    r = cur.fetchone()
+                    return self._to_user_dict(r) if r else None
+        except Exception:
+            return None
+
+    def get_user_by_pin(self, pin: str) -> Optional[dict]:
+        if not pin:
+            return None
+        try:
+            with self._connect() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute("SELECT * FROM users WHERE web_pin = %s AND is_approved = TRUE", (pin.strip(),))
+                    r = cur.fetchone()
+                    return self._to_user_dict(r) if r else None
+        except Exception:
+            return None
+
+    def create_or_update_user(
+        self,
+        user_id: Optional[int] = None,
+        telegram_chat_id: Optional[str] = None,
+        display_name: str = "Usuario",
+        role: str = "user",
+        web_pin: Optional[str] = None,
+        daily_ai_limit: int = 10,
+        is_approved: bool = True,
+    ) -> dict:
+        clean_chat = str(telegram_chat_id).strip() if telegram_chat_id else None
+        clean_pin = str(web_pin).strip() if web_pin else None
+        clean_role = "admin" if role == "admin" else "user"
+        with self._connect() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                if user_id is not None:
+                    cur.execute(
+                        """UPDATE users
+                           SET telegram_chat_id = COALESCE(%s, telegram_chat_id),
+                               display_name = %s,
+                               role = %s,
+                               web_pin = %s,
+                               daily_ai_limit = %s,
+                               is_approved = %s
+                           WHERE id = %s
+                           RETURNING *""",
+                        (clean_chat, display_name.strip(), clean_role, clean_pin, int(daily_ai_limit), bool(is_approved), int(user_id)),
+                    )
+                    r = cur.fetchone()
+                    if r:
+                        return self._to_user_dict(r)
+
+                if clean_chat:
+                    cur.execute(
+                        """INSERT INTO users (telegram_chat_id, display_name, role, web_pin, daily_ai_limit, is_approved)
+                           VALUES (%s, %s, %s, %s, %s, %s)
+                           ON CONFLICT (telegram_chat_id) DO UPDATE SET
+                               display_name = EXCLUDED.display_name,
+                               role = EXCLUDED.role,
+                               web_pin = COALESCE(EXCLUDED.web_pin, users.web_pin),
+                               daily_ai_limit = EXCLUDED.daily_ai_limit,
+                               is_approved = EXCLUDED.is_approved
+                           RETURNING *""",
+                        (clean_chat, display_name.strip(), clean_role, clean_pin, int(daily_ai_limit), bool(is_approved)),
+                    )
+                else:
+                    cur.execute(
+                        """INSERT INTO users (display_name, role, web_pin, daily_ai_limit, is_approved)
+                           VALUES (%s, %s, %s, %s, %s)
+                           RETURNING *""",
+                        (display_name.strip(), clean_role, clean_pin, int(daily_ai_limit), bool(is_approved)),
+                    )
+                r = cur.fetchone()
+                uid = int(r["id"])
+                cur.execute("INSERT INTO user_settings (id) VALUES (%s) ON CONFLICT (id) DO NOTHING", (uid,))
+                return self._to_user_dict(r)
+
+    def delete_user(self, user_id: int) -> bool:
+        if int(user_id) == 1:
+            return False  # El administrador principal no se puede eliminar
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM user_settings WHERE id = %s", (int(user_id),))
+                cur.execute("DELETE FROM users WHERE id = %s", (int(user_id),))
+                return cur.rowcount == 1
+
+    def check_and_consume_ai_quota(self, user_id: int = 1, today: Optional[date] = None) -> tuple[bool, int, int]:
+        """Verifica y consume 1 crédito de cuota diaria IA para el usuario.
+        Devuelve (permitido, usado_hoy, limite_diario).
+        """
+        today_date = today or date.today()
+        try:
+            with self._connect() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute("SELECT * FROM users WHERE id = %s", (int(user_id),))
+                    u = cur.fetchone()
+                    if not u:
+                        return True, 0, 9999
+                    if u["role"] == "admin":
+                        used = (int(u["ai_calls_today"]) if u["ai_calls_date"] == today_date else 0) + 1
+                        cur.execute(
+                            "UPDATE users SET ai_calls_today = %s, ai_calls_date = %s WHERE id = %s",
+                            (used, today_date, int(user_id)),
+                        )
+                        return True, used, int(u["daily_ai_limit"])
+
+                    limit = int(u["daily_ai_limit"] or 10)
+                    used = int(u["ai_calls_today"] or 0) if u["ai_calls_date"] == today_date else 0
+                    if used >= limit:
+                        return False, used, limit
+                    used += 1
+                    cur.execute(
+                        "UPDATE users SET ai_calls_today = %s, ai_calls_date = %s WHERE id = %s",
+                        (used, today_date, int(user_id)),
+                    )
+                    return True, used, limit
+        except Exception:
+            return True, 0, 9999
+
+    # --------------------------------------------------- Business Intelligence (BI)
+    def get_bi_analytics(self) -> dict:
+        """Agrega métricas centralizadas de aprendizaje, dificultad por concepto y actividad multi-usuario."""
+        with self._connect() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # 1. Términos con mayor tasa de olvido (puntos ciegos conceptuales)
+                cur.execute(
+                    """SELECT t.id AS term_id,
+                              t.term,
+                              c.macro_area,
+                              c.name AS category_name,
+                              COUNT(r.id) AS total_reviews,
+                              SUM(CASE WHEN r.rating = 1 THEN 1 ELSE 0 END) AS forgotten_count,
+                              SUM(CASE WHEN r.rating = 2 THEN 1 ELSE 0 END) AS doubted_count,
+                              SUM(CASE WHEN r.rating = 3 THEN 1 ELSE 0 END) AS mastered_count,
+                              ROUND((SUM(CASE WHEN r.rating = 1 THEN 1.0 ELSE 0.0 END) / NULLIF(COUNT(r.id), 0)) * 100, 1) AS forgotten_rate_pct
+                       FROM terms t
+                       JOIN categories c ON c.id = t.category_id
+                       LEFT JOIN review_log r ON r.term_id = t.id
+                       GROUP BY t.id, t.term, c.macro_area, c.name
+                       ORDER BY forgotten_count DESC, total_reviews DESC, t.id ASC
+                       LIMIT 15"""
+                )
+                hardest_terms = [dict(r) for r in cur.fetchall()]
+
+                # 2. Métricas agregadas por Macro-Área
+                cur.execute(
+                    """SELECT c.macro_area,
+                              COUNT(DISTINCT c.id) AS category_count,
+                              COUNT(DISTINCT t.id) AS term_count,
+                              ROUND(AVG(s.ease_factor)::numeric, 2) AS avg_ease_factor,
+                              ROUND(AVG(s.interval_days)::numeric, 1) AS avg_interval_days,
+                              SUM(CASE WHEN s.interval_days >= 21 THEN 1 ELSE 0 END) AS canonically_mastered_terms
+                       FROM categories c
+                       LEFT JOIN terms t ON t.category_id = c.id
+                       LEFT JOIN srs_state s ON s.term_id = t.id
+                       GROUP BY c.macro_area
+                       ORDER BY term_count DESC, c.macro_area ASC"""
+                )
+                area_breakdown = [dict(r) for r in cur.fetchall()]
+
+                # 3. Actividad y progreso por usuario
+                cur.execute(
+                    """SELECT u.id AS user_id,
+                              u.display_name,
+                              u.role,
+                              u.telegram_chat_id,
+                              u.is_approved,
+                              u.daily_ai_limit,
+                              u.ai_calls_today,
+                              COUNT(DISTINCT us.term_id) AS assigned_terms,
+                              SUM(CASE WHEN us.interval_days >= 21 THEN 1 ELSE 0 END) AS mastered_terms,
+                              (SELECT COUNT(*) FROM review_log rl WHERE rl.user_id = u.id) AS total_reviews
+                       FROM users u
+                       LEFT JOIN user_srs_state us ON us.user_id = u.id
+                       GROUP BY u.id
+                       ORDER BY u.id ASC"""
+                )
+                user_metrics = [dict(r) for r in cur.fetchall()]
+
+                # 4. Totales globales de auditoría
+                cur.execute("SELECT COUNT(*) AS total_reviews FROM review_log")
+                total_reviews = int(cur.fetchone()["total_reviews"] or 0)
+
+        return {
+            "total_reviews_logged": total_reviews,
+            "hardest_terms": hardest_terms,
+            "area_breakdown": area_breakdown,
+            "user_metrics": user_metrics,
+        }

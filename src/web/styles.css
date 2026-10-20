@@ -1033,6 +1033,131 @@ dialog input:focus {
   font-size: 13px;
 }
 
+/* Study Categories Selector, Multi-User Form & BI Dashboard */
+.study-cats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.study-area-group {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  background: #f8fafc;
+}
+
+.study-area-title {
+  font-weight: 700;
+  font-size: 13px;
+  margin-bottom: 8px;
+  color: #0f172a;
+}
+
+.study-cats-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.study-cat-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.study-cat-check input {
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+
+.study-cat-check small {
+  color: #64748b;
+}
+
+.user-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+  align-items: center;
+}
+
+.user-form-grid input,
+.user-form-grid select {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-family: inherit;
+}
+
+.usr-seed-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.bi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 14px;
+}
+
+.bi-box {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  background: #f8fafc;
+  overflow-x: auto;
+}
+
+.bi-box h4 {
+  margin: 0 0 10px 0;
+  font-size: 13px;
+  color: #0f172a;
+}
+
+.bi-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+
+.bi-table th,
+.bi-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+.bi-table th {
+  font-weight: 700;
+  color: #475569;
+  background: #f1f5f9;
+}
+
+html[data-theme="dark"] .study-area-group,
+html[data-theme="dark"] .bi-box {
+  background: #0f172a;
+  border-color: #334155;
+}
+
+html[data-theme="dark"] .study-area-title,
+html[data-theme="dark"] .bi-box h4 {
+  color: #f8fafc;
+}
+
+html[data-theme="dark"] .bi-table th {
+  background: #1e293b;
+  color: #cbd5e1;
+}
+
 /* Dark Theme Support */
 html[data-theme="dark"] body {
   background: #0b1120;

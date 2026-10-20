@@ -37,8 +37,44 @@ _CONVERSATIONAL_NOISE = {
 }
 
 
+class _AIScopeInterpretation(BaseModel):
+    """Una acepción/interpretación individual de un término dentro de un ámbito específico."""
+    macro_area: str = Field(description="Macro-área / disciplina fundamentada (ej. Ingeniería de Software, Derecho, Economía). Reusa una existente si aplica.")
+    category: str = Field(description="Nombre de la categoría o ámbito específico donde se interpreta el término. Cada interpretación DEBE tener una categoría distinta.")
+    is_new_category: bool
+    category_description: str = Field(description="Explicación sencilla de la categoría y su nivel de zoom.")
+    zoom_level: int = Field(description="1=Micro/Detalle/Código/Artículo, 2=Medio/Módulos/Instituciones, 3=Macro/Arquitectura/Rama, 4=Infraestructura/Fundamentos/Doctrina")
+    technical_definition: str
+    daily_analogy: str
+    tradeoff_when_not_to_use: str
+
+
+class _AIMultiFicha(BaseModel):
+    """Esquema JSON de Captura Total: devuelve TODAS las interpretaciones canónicas del término en una sola llamada."""
+    is_valid_concept: bool = Field(
+        default=True,
+        description="True si es un término o concepto académico, técnico, jurídico, científico o profesional legítimo. False si es un saludo ('Hola'), charla casual, frase sin sentido o mensaje conversacional."
+    )
+    rejection_reason: str = Field(
+        default="",
+        description="Si is_valid_concept es False, explicación breve y amable de por qué no es un término almacenable. Si es True, cadena vacía."
+    )
+    canonical_term: str = Field(description="Nombre canónico limpio del término (sin sufijos de área entre paréntesis, ya que la categoría define el ámbito). Si es sigla, 'SIGLA (Nombre completo)'.")
+    interpretations: list[_AIScopeInterpretation] = Field(
+        default_factory=list,
+        description=(
+            "Lista exhaustiva y completa de TODAS las interpretaciones/acepciones válidas y distintas de este término "
+            "a través de todas las disciplinas, sub-ramas o niveles de abstracción donde se utiliza formalmente "
+            "(por ejemplo: Derecho Civil, Derecho Tributario, Derecho Laboral, Economía y Finanzas, Contabilidad, "
+            "Arquitectura de Software, Programación, Sistemas Operativos, Redes, etc.). "
+            "NUNCA te limites a 1 sola interpretación si el término también tiene significado o aplicación específica "
+            "en otra rama, sub-disciplina o nivel de zoom: genera una ficha independiente en `interpretations` por cada ámbito."
+        ),
+    )
+
+
 class _AIFicha(BaseModel):
-    """Esquema JSON que se exige al LLM (structured output)."""
+    """Esquema JSON individual que se exige al LLM (structured output)."""
     is_valid_concept: bool = Field(
         default=True,
         description="True si es un término o concepto académico, técnico, jurídico, científico o profesional legítimo. False si es un saludo ('Hola'), charla casual, frase sin sentido o mensaje conversacional."
@@ -265,3 +301,119 @@ class GeminiEnricher:
             tradeoff_when_not_to_use=" ".join(f.tradeoff_when_not_to_use.split()),
             other_scopes=scopes,
         )
+
+    def enrich_all(
+        self,
+        term: str,
+        categories: Sequence[Category],
+        examples: Sequence[tuple[Term, Category]] = (),
+        target_scope: Optional[str] = None,
+        exclude_categories: Sequence[str] = (),
+    ) -> list[NewTermDraft]:
+        """Genera en una sola llamada TODAS las acepciones canónicas válidas del término (sin botones manuales)."""
+        if target_scope:
+            return [self.enrich(term, categories, examples, target_scope=target_scope, exclude_categories=exclude_categories)]
+
+        from google.genai import types
+
+        term = " ".join(term.split())
+        if not term:
+            raise InvalidTermError("El término está vacío.")
+        if len(term) > 120:
+            raise InvalidTermError(
+                f"El término es demasiado extenso ({len(term)} caracteres). El límite máximo es de 120 caracteres."
+            )
+        norm_check = _normalize_check(term)
+        if norm_check in _CONVERSATIONAL_NOISE or len(norm_check) < 2:
+            raise InvalidTermError(
+                f"«{term}» parece un saludo o mensaje conversacional, no un concepto técnico o académico para el glosario."
+            )
+
+        client = self._get_client()
+        multi_prompt = (
+            self._build_prompt(term, categories, examples, exclude_categories=exclude_categories)
+            + "\n\nINSTRUCCIÓN OBLIGATORIA DE CAPTURA MULTIDISCIPLINAR COMPLETA: "
+              "El usuario NO tiene botones para pedir otros ámbitos manualmente. Por lo tanto, DEBES generar de inmediato "
+              "en el arreglo `interpretations` TODAS las interpretaciones/acepciones formales de este término en cada "
+              "disciplina, sub-rama o nivel de abstracción donde aplique (ej. si es un término jurídico-económico como "
+              "'Contraprestativo', incluye sus fichas independientes en Derecho Civil/Obligaciones, Derecho Tributario/Tasas, "
+              "Derecho Laboral y Economía/Finanzas; si es de Software como 'REST' o 'Proceso', incluye Arquitectura, "
+              "Programación de APIs, Sistemas Operativos, Derecho Procesal, etc.). "
+              "Cada elemento de `interpretations` debe ubicarse en su propia `category` y `macro_area` (sin repetir `category`)."
+        )
+
+        feedback, multi = "", None
+        excl_norm = {c.strip().casefold() for c in exclude_categories}
+        for _ in range(MAX_ATTEMPTS):
+            try:
+                resp = client.models.generate_content(
+                    model=self.model,
+                    contents=multi_prompt + (f"\n\nCORRIGE: {feedback}" if feedback else ""),
+                    config=types.GenerateContentConfig(
+                        system_instruction=_SYSTEM,
+                        response_mime_type="application/json",
+                        response_schema=_AIMultiFicha,
+                        temperature=0.3,
+                    ),
+                )
+            except Exception as e:
+                raise EnrichmentError(f"Error llamando a Gemini: {e}") from e
+
+            multi = resp.parsed if isinstance(resp.parsed, _AIMultiFicha) else _AIMultiFicha.model_validate_json(resp.text)
+            if not multi.is_valid_concept:
+                reason = multi.rejection_reason.strip() or f"«{term}» no se reconoce como un concepto académico o técnico válido."
+                raise InvalidTermError(reason)
+
+            problems = []
+            if not multi.interpretations:
+                problems.append("Debes incluir al menos 1 interpretación en `interpretations`.")
+            seen_cats: set[str] = set()
+            for idx, item in enumerate(multi.interpretations, 1):
+                cat_key = item.category.strip().casefold()
+                if cat_key in excl_norm:
+                    problems.append(f"Interpretación #{idx}: la categoría '{item.category}' ya está ocupada.")
+                if cat_key in seen_cats:
+                    problems.append(f"Interpretación #{idx}: categoría duplicada '{item.category}'; cada acepción debe tener su propio ámbito/categoría.")
+                seen_cats.add(cat_key)
+                if _word_count(item.technical_definition) < DEF_MIN_WORDS:
+                    problems.append(f"Interpretación #{idx}: technical_definition demasiado breve (mínimo {DEF_MIN_WORDS} palabras).")
+                if not item.daily_analogy.strip() or not item.tradeoff_when_not_to_use.strip():
+                    problems.append(f"Interpretación #{idx}: daily_analogy y tradeoff_when_not_to_use son obligatorios.")
+            if not problems:
+                break
+            feedback = " ".join(problems)
+
+        if multi is None or not multi.interpretations:
+            raise EnrichmentError("Gemini no devolvió interpretaciones válidas.")
+
+        all_cat_names = [it.category.strip() for it in multi.interpretations if it.category.strip()]
+        drafts: list[NewTermDraft] = []
+        seen_final: set[str] = set()
+        for it in multi.interpretations:
+            ckey = it.category.strip().casefold()
+            if ckey in seen_final or ckey in excl_norm:
+                continue
+            seen_final.add(ckey)
+            match = next((c for c in categories if c.name.casefold() == ckey), None)
+            if match:
+                macro, name, desc, zoom = match.macro_area, match.name, match.description, match.zoom_level
+            else:
+                macro, name = it.macro_area.strip(), it.category.strip()
+                desc = it.category_description.strip() or f"Categoría de {macro}."
+                zoom = ZoomLevel(min(4, max(1, it.zoom_level if it.zoom_level in (1, 2, 3, 4) else 2)))
+            sibling_scopes = tuple(s for s in all_cat_names if s.casefold() != ckey)
+            drafts.append(
+                NewTermDraft(
+                    term=multi.canonical_term.strip(),
+                    macro_area=macro,
+                    category_name=name,
+                    category_description=desc,
+                    zoom_level=zoom,
+                    technical_definition=" ".join(it.technical_definition.split()),
+                    daily_analogy=" ".join(it.daily_analogy.split()),
+                    tradeoff_when_not_to_use=" ".join(it.tradeoff_when_not_to_use.split()),
+                    other_scopes=sibling_scopes,
+                )
+            )
+        return drafts
+
