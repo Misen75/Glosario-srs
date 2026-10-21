@@ -2057,10 +2057,20 @@
       .replace(/'/g, "&#039;");
   }
 
-  // Service Worker para PWA
+  // Service Worker para PWA (con recarga automática al detectar nueva versión)
   if ("serviceWorker" in navigator) {
+    let refreshing = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (!refreshing) {
+        refreshing = true;
+        window.location.reload();
+      }
+    });
+
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("/sw.js").catch(err => {
+      navigator.serviceWorker.register("/sw.js").then(reg => {
+        reg.update();
+      }).catch(err => {
         console.warn("SW register fail:", err);
       });
     });
