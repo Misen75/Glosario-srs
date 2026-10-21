@@ -7,21 +7,29 @@ from enum import IntEnum
 from typing import Optional
 
 
+# Descriptores universales de granularidad ontológica. Se usan como valor por defecto cuando una
+# Macro-Área todavía no tiene persistidos sus descriptores específicos de disciplina.
+DEFAULT_ZOOM_LABELS: tuple[str, str, str, str] = (
+    "Micro · Unidad elemental",
+    "Medio · Componente",
+    "Macro · Estructura",
+    "Fundamentos · Doctrina e infraestructura",
+)
+
+DEFAULT_LIMITS_LABEL: str = "Compensaciones y Anti-patrones (Trade-offs)"
+
+
 class ZoomLevel(IntEnum):
-    """Nivel de 'zoom' del software en el que actúa una categoría."""
-    MICRO = 1           # Código: clases, funciones, objetos
-    MEDIO = 2           # Módulos, componentes, contratos entre piezas
-    MACRO = 3           # Arquitectura del sistema completo
-    INFRAESTRUCTURA = 4 # Operación, red, hardware, despliegue
+    """Nivel de granularidad ontológica en el que actúa una categoría dentro de su disciplina."""
+    MICRO = 1           # Unidad elemental indivisible de la disciplina
+    MEDIO = 2           # Componente o institución que articula unidades elementales
+    MACRO = 3           # Estructura o rama sistémica que integra componentes
+    INFRAESTRUCTURA = 4 # Sustrato: fundamentos teóricos, doctrina o infraestructura
 
     @property
     def label(self) -> str:
-        return {
-            1: "Micro · Código",
-            2: "Medio · Módulos",
-            3: "Macro · Arquitectura",
-            4: "Infraestructura · Operación",
-        }[int(self)]
+        """Descriptor universal (independiente de disciplina)."""
+        return DEFAULT_ZOOM_LABELS[int(self) - 1]
 
 
 class Rating(IntEnum):
@@ -33,6 +41,25 @@ class Rating(IntEnum):
     @property
     def label(self) -> str:
         return {1: "Olvidado", 2: "Dudé", 3: "Dominado"}[int(self)]
+
+
+@dataclass(frozen=True)
+class MacroArea:
+    """Disciplina normalizada del conocimiento con sus descriptores de escala y límites propios."""
+    id: Optional[int]
+    name: str
+    description: str = ""
+    zoom_labels: tuple[str, str, str, str] = DEFAULT_ZOOM_LABELS
+    limits_label: str = DEFAULT_LIMITS_LABEL
+
+    def zoom_label(self, level: int | ZoomLevel) -> str:
+        idx = min(4, max(1, int(level))) - 1
+        labels = self.zoom_labels if len(self.zoom_labels) == 4 else DEFAULT_ZOOM_LABELS
+        return labels[idx] or DEFAULT_ZOOM_LABELS[idx]
+
+    @property
+    def has_specific_labels(self) -> bool:
+        return tuple(self.zoom_labels) != DEFAULT_ZOOM_LABELS
 
 
 @dataclass(frozen=True)
@@ -50,9 +77,29 @@ class Category:
 
 @dataclass(frozen=True)
 class Area:
-    """Macro-área (disciplina). Agrupa categorías ordenadas de Micro a Macro."""
+    """Macro-área (disciplina). Agrupa categorías ordenadas de Micro a Fundamentos."""
     name: str
     categories: tuple[Category, ...] = field(default_factory=tuple)
+    description: str = ""
+    zoom_labels: tuple[str, str, str, str] = DEFAULT_ZOOM_LABELS
+    limits_label: str = DEFAULT_LIMITS_LABEL
+
+
+@dataclass(frozen=True)
+class UserTermCustomization:
+    """Sobreescritura personal (Copy-on-Write) y estado de propuesta de mejora canónica."""
+    user_id: int
+    term_id: int
+    custom_definition: Optional[str] = None
+    custom_analogy: Optional[str] = None
+    custom_limits: Optional[str] = None
+    personal_notes: Optional[str] = None
+    status: str = "private"  # 'private', 'proposed_to_canonical', 'rejected_by_arbitration', 'merged_to_canonical'
+    proposal_justification: Optional[str] = None
+    proposal_source: Optional[str] = None
+    arbitration_score: Optional[float] = None
+    arbitration_verdict: Optional[str] = None
+    updated_at: Optional[datetime] = None
 
 
 @dataclass(frozen=True)
@@ -66,6 +113,9 @@ class Term:
     tradeoff_when_not_to_use: Optional[str]
     created_at: Optional[datetime] = None
     other_scopes: tuple[str, ...] = field(default_factory=tuple)
+    canonical_source: str = ""
+    parent_term: Optional[str] = None
+    related_terms: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -80,6 +130,12 @@ class NewTermDraft:
     daily_analogy: str
     tradeoff_when_not_to_use: Optional[str]
     other_scopes: tuple[str, ...] = field(default_factory=tuple)
+    canonical_source: str = ""
+    parent_term: Optional[str] = None
+    related_terms: tuple[str, ...] = field(default_factory=tuple)
+    macro_area_description: str = ""
+    macro_area_zoom_labels: tuple[str, ...] = field(default_factory=tuple)
+    macro_area_limits_label: str = DEFAULT_LIMITS_LABEL
 
 
 @dataclass(frozen=True)

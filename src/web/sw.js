@@ -1,5 +1,5 @@
 // Service Worker para Glosario SRS (PWA)
-const CACHE_NAME = "glosario-srs-v7";
+const CACHE_NAME = "glosario-srs-v10";
 const STATIC_ASSETS = [
   "/",
   "/index.html",
@@ -43,7 +43,7 @@ self.addEventListener("fetch", (e) => {
     return;
   }
 
-  // Estáticos: Network first, con fallback a caché
+  // EstÃ¡ticos: Network first, con fallback a cachÃ©
   e.respondWith(
     fetch(e.request)
       .then((res) => {

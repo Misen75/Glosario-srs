@@ -11,7 +11,8 @@ from typing import Optional, Protocol, Sequence
 
 from src.domain import srs_scheduler
 from src.domain.models import (
-    Area, Category, NewTermDraft, Rating, ReviewLog, SRSState, Term,
+    DEFAULT_LIMITS_LABEL, Area, Category, NewTermDraft, Rating, ReviewLog,
+    SRSState, Term, UserTermCustomization,
 )
 from src.infrastructure.db_repository import (
     PostgresGlossaryRepository as GlossaryRepository,
@@ -45,10 +46,12 @@ class TermEnricher(Protocol):
 
 @dataclass(frozen=True)
 class TermCard:
-    """Vista agregada de un término lista para cualquier interfaz."""
+    """Vista agregada de un término lista para cualquier interfaz con soporte de personalización CoW."""
     term: Term
     category: Category
     srs: SRSState
+    customization: Optional[UserTermCustomization] = None
+    limits_label: str = DEFAULT_LIMITS_LABEL
 
 
 @dataclass(frozen=True)
@@ -78,7 +81,21 @@ class GlossaryService:
             srs = self.repo.get_srs_state(term.id)
         if srs is None:
             srs = SRSState(term_id=term.id)
-        return TermCard(term, cat, srs)
+        customization = None
+        if hasattr(self.repo, "get_user_customization"):
+            try:
+                customization = self.repo.get_user_customization(user_id, term.id)
+            except Exception:
+                pass
+        limits_label = DEFAULT_LIMITS_LABEL
+        if hasattr(self.repo, "list_macro_areas") and cat:
+            try:
+                macro_map = self.repo.list_macro_areas()
+                if cat.macro_area in macro_map:
+                    limits_label = macro_map[cat.macro_area].limits_label
+            except Exception:
+                pass
+        return TermCard(term, cat, srs, customization=customization, limits_label=limits_label)
 
     def get_card(self, term_id: int, user_id: int = 1) -> Optional[TermCard]:
         t = self.repo.get_term(term_id)
@@ -90,19 +107,48 @@ class GlossaryService:
             states = self.repo.list_srs_states(user_id=user_id)
         except TypeError:
             states = self.repo.list_srs_states()
-        return [
-            TermCard(t, cats[t.category_id], states.get(t.id, SRSState(term_id=t.id)))
-            for t in self.repo.list_terms()
-            if (int(user_id) == 1 or t.id in states)
-        ]
+        customizations = {}
+        if hasattr(self.repo, "list_user_customizations"):
+            try:
+                customizations = self.repo.list_user_customizations(user_id)
+            except Exception:
+                pass
+        macro_map = self.repo.list_macro_areas() if hasattr(self.repo, "list_macro_areas") else {}
+        cards = []
+        for t in self.repo.list_terms():
+            if int(user_id) == 1 or t.id in states:
+                cat = cats.get(t.category_id)
+                lim_lbl = macro_map[cat.macro_area].limits_label if (cat and cat.macro_area in macro_map) else DEFAULT_LIMITS_LABEL
+                cards.append(
+                    TermCard(
+                        term=t,
+                        category=cat,
+                        srs=states.get(t.id, SRSState(term_id=t.id)),
+                        customization=customizations.get(t.id),
+                        limits_label=lim_lbl,
+                    )
+                )
+        return cards
 
     def list_areas(self) -> list[Area]:
-        """Macro-áreas con sus categorías ordenadas Micro -> Macro."""
+        """Macro-áreas con sus categorías ordenadas Micro -> Macro y descriptores de granularidad propios."""
         grouped: dict[str, list[Category]] = {}
         for c in self.repo.list_categories():
             grouped.setdefault(c.macro_area, []).append(c)
-        return [Area(name, tuple(sorted(cs, key=lambda c: (c.zoom_level, c.id))))
-                for name, cs in grouped.items()]
+        macro_map = self.repo.list_macro_areas() if hasattr(self.repo, "list_macro_areas") else {}
+        areas: list[Area] = []
+        for name, cs in grouped.items():
+            ma = macro_map.get(name)
+            areas.append(
+                Area(
+                    name=name,
+                    categories=tuple(sorted(cs, key=lambda c: (c.zoom_level, c.id))),
+                    description=ma.description if ma else "",
+                    zoom_labels=ma.zoom_labels if ma else Area(name, ()).zoom_labels,
+                    limits_label=ma.limits_label if ma else DEFAULT_LIMITS_LABEL,
+                )
+            )
+        return areas
 
     def _find_all_by_name(self, name: str) -> list[Term]:
         if hasattr(self.repo, "find_terms_by_name"):
@@ -258,6 +304,7 @@ class GlossaryService:
             except TypeError:
                 cfg = self.repo.get_settings()
             cfg.setdefault("active_category_ids", [])
+            cfg.setdefault("excluded_term_ids", [])
             return cfg
         return {
             "session_card_limit": 5,
@@ -267,6 +314,7 @@ class GlossaryService:
             "theme": "light",
             "step_by_step_reveal": False,
             "active_category_ids": [],
+            "excluded_term_ids": [],
         }
 
     def update_settings(self, user_id: int = 1, **kwargs) -> dict:
@@ -380,14 +428,23 @@ class GlossaryService:
         if not cfg.get("focused_mode", True):
             return None
         active_cat_ids = cfg.get("active_category_ids") or []
+        excluded_tids = cfg.get("excluded_term_ids") or []
         cat_id = None
         if hasattr(self.repo, "get_active_focus_category_id"):
             try:
                 cat_id = self.repo.get_active_focus_category_id(
-                    today, user_id=user_id, active_category_ids=active_cat_ids
+                    today,
+                    user_id=user_id,
+                    active_category_ids=active_cat_ids,
+                    excluded_term_ids=excluded_tids,
                 )
             except TypeError:
-                cat_id = self.repo.get_active_focus_category_id(today)
+                try:
+                    cat_id = self.repo.get_active_focus_category_id(
+                        today, user_id=user_id, active_category_ids=active_cat_ids
+                    )
+                except TypeError:
+                    cat_id = self.repo.get_active_focus_category_id(today)
         else:
             due_ids = self.repo.list_due_term_ids(today, limit=1)
             if due_ids:
@@ -400,12 +457,15 @@ class GlossaryService:
             return None
         cat_due = self.count_due(today, category_id=cat_id, user_id=user_id)
         cat_mastery = self.category_mastery(cat_id, today, user_id=user_id)
+        macro_map = self.repo.list_macro_areas() if hasattr(self.repo, "list_macro_areas") else {}
+        ma = macro_map.get(cat.macro_area)
+        zoom_label = ma.zoom_label(int(cat.zoom_level)) if ma else cat.zoom_level.label
         return {
             "category_id": cat.id,
             "category": cat.name,
             "macro_area": cat.macro_area,
             "zoom_level": int(cat.zoom_level),
-            "zoom_label": cat.zoom_level.label,
+            "zoom_label": zoom_label,
             "category_due": cat_due,
             "category_total": cat_mastery["total_terms"],
             "mastery_score": cat_mastery["mastery_score"],
@@ -426,6 +486,7 @@ class GlossaryService:
         use_focused = cfg.get("focused_mode", True) if focused is None else focused
         use_limit = cfg.get("session_card_limit", 5) if limit is None else limit
         active_cat_ids = cfg.get("active_category_ids") or []
+        excluded_tids = cfg.get("excluded_term_ids") or []
         try:
             due_ids = self.repo.list_due_term_ids(
                 today,
@@ -433,12 +494,22 @@ class GlossaryService:
                 focused=use_focused,
                 user_id=user_id,
                 active_category_ids=active_cat_ids,
+                excluded_term_ids=excluded_tids,
             )
         except TypeError:
             try:
-                due_ids = self.repo.list_due_term_ids(today, limit=use_limit, focused=use_focused)
+                due_ids = self.repo.list_due_term_ids(
+                    today,
+                    limit=use_limit,
+                    focused=use_focused,
+                    user_id=user_id,
+                    active_category_ids=active_cat_ids,
+                )
             except TypeError:
-                due_ids = self.repo.list_due_term_ids(today, limit=use_limit)
+                try:
+                    due_ids = self.repo.list_due_term_ids(today, limit=use_limit, focused=use_focused)
+                except TypeError:
+                    due_ids = self.repo.list_due_term_ids(today, limit=use_limit)
         return [c for tid in due_ids if (c := self.get_card(tid, user_id=user_id))]
 
     def count_due(
@@ -448,16 +519,27 @@ class GlossaryService:
         user_id: int = 1,
     ) -> int:
         today = today or date.today()
-        active_cat_ids = self.get_settings(user_id=user_id).get("active_category_ids") or []
+        cfg = self.get_settings(user_id=user_id)
+        active_cat_ids = cfg.get("active_category_ids") or []
+        excluded_tids = cfg.get("excluded_term_ids") or []
         try:
             return self.repo.count_due(
-                today, category_id=category_id, user_id=user_id, active_category_ids=active_cat_ids
+                today,
+                category_id=category_id,
+                user_id=user_id,
+                active_category_ids=active_cat_ids,
+                excluded_term_ids=excluded_tids,
             )
         except TypeError:
             try:
-                return self.repo.count_due(today, category_id=category_id)
+                return self.repo.count_due(
+                    today, category_id=category_id, user_id=user_id, active_category_ids=active_cat_ids
+                )
             except TypeError:
-                return self.repo.count_due(today)
+                try:
+                    return self.repo.count_due(today, category_id=category_id)
+                except TypeError:
+                    return self.repo.count_due(today)
 
     def preview_intervals(self, srs: SRSState, now: Optional[datetime] = None) -> dict[Rating, int]:
         return srs_scheduler.preview(srs, now or datetime.now())
@@ -499,3 +581,113 @@ class GlossaryService:
             "global_mastery": g_mastery,
             "settings": self.get_settings(user_id=user_id),
         }
+
+    # ------------------------------------------------------------- Personalización CoW y Arbitraje
+    def get_user_customization(self, user_id: int, term_id: int) -> Optional[UserTermCustomization]:
+        if hasattr(self.repo, "get_user_customization"):
+            return self.repo.get_user_customization(user_id, term_id)
+        return None
+
+    def save_user_customization(
+        self,
+        user_id: int,
+        term_id: int,
+        custom_definition: Optional[str] = None,
+        custom_analogy: Optional[str] = None,
+        custom_limits: Optional[str] = None,
+        personal_notes: Optional[str] = None,
+    ) -> Optional[UserTermCustomization]:
+        if hasattr(self.repo, "save_user_customization"):
+            return self.repo.save_user_customization(
+                user_id=user_id,
+                term_id=term_id,
+                custom_definition=custom_definition,
+                custom_analogy=custom_analogy,
+                custom_limits=custom_limits,
+                personal_notes=personal_notes,
+            )
+        return None
+
+    def delete_user_customization(self, user_id: int, term_id: int) -> bool:
+        if hasattr(self.repo, "delete_user_customization"):
+            return self.repo.delete_user_customization(user_id, term_id)
+        return False
+
+    def submit_canonical_proposal(
+        self,
+        user_id: int,
+        term_id: int,
+        justification: str,
+        source: str,
+        custom_definition: Optional[str] = None,
+        custom_analogy: Optional[str] = None,
+        custom_limits: Optional[str] = None,
+    ) -> dict:
+        t = self.repo.get_term(term_id)
+        if not t:
+            raise KeyError(f"Término id={term_id} no existe")
+        cat = self.repo.get_category(t.category_id)
+        if not hasattr(self.repo, "submit_canonical_proposal"):
+            raise NotImplementedError("El repositorio no implementa submit_canonical_proposal")
+
+        self.repo.submit_canonical_proposal(
+            user_id=user_id,
+            term_id=term_id,
+            proposal_justification=justification,
+            proposal_source=source,
+            custom_definition=custom_definition,
+            custom_analogy=custom_analogy,
+            custom_limits=custom_limits,
+        )
+
+        score = None
+        verdict = None
+        critique = None
+        if self.enricher and hasattr(self.enricher, "arbitrate_proposal"):
+            try:
+                res = self.enricher.arbitrate_proposal(
+                    term_name=t.term,
+                    macro_area=cat.macro_area if cat else "",
+                    category_name=cat.name if cat else "",
+                    canonical_definition=t.technical_definition,
+                    canonical_analogy=t.daily_analogy,
+                    canonical_limits=t.tradeoff_when_not_to_use,
+                    canonical_source=t.canonical_source,
+                    proposed_definition=custom_definition,
+                    proposed_analogy=custom_analogy,
+                    proposed_limits=custom_limits,
+                    proposal_source=source,
+                    proposal_justification=justification,
+                )
+                score = res.get("score")
+                verdict = res.get("verdict")
+                critique = res.get("critique")
+                if hasattr(self.repo, "save_proposal_arbitration") and score is not None:
+                    self.repo.save_proposal_arbitration(user_id, term_id, score, verdict)
+            except Exception:
+                pass
+
+        return {
+            "user_id": user_id,
+            "term_id": term_id,
+            "status": "proposed_to_canonical",
+            "arbitration_score": score,
+            "arbitration_verdict": verdict,
+            "arbitration_critique": critique,
+        }
+
+    def list_pending_proposals(self) -> list[dict]:
+        if hasattr(self.repo, "list_pending_proposals"):
+            return self.repo.list_pending_proposals()
+        return []
+
+    def resolve_proposal(
+        self,
+        user_id: int,
+        term_id: int,
+        action: str,
+        admin_notes: Optional[str] = None,
+    ) -> bool:
+        if hasattr(self.repo, "resolve_proposal"):
+            return self.repo.resolve_proposal(user_id, term_id, action, admin_notes=admin_notes)
+        return False

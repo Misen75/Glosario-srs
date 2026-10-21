@@ -169,6 +169,23 @@ def format_card_front(
     )
 
 
+def _format_epistemological_meta(term) -> str:
+    canonical_src = (getattr(term, "canonical_source", "") or "").strip()
+    parent_t = (getattr(term, "parent_term", "") or "").strip()
+    related_t = getattr(term, "related_terms", ()) or ()
+    lines = []
+    if canonical_src:
+        lines.append(f"📚 <b>Fuente Canónica:</b> <i>{escape_html(canonical_src)}</i>")
+    if parent_t or related_t:
+        rel_parts = []
+        if parent_t:
+            rel_parts.append(f"↑ Hiperónimo: <b>{escape_html(parent_t)}</b>")
+        if related_t:
+            rel_parts.append(f"↔ Relacionados: <i>{', '.join(escape_html(r) for r in related_t)}</i>")
+        lines.append(f"🌲 <b>Topología Ontológica:</b> {' · '.join(rel_parts)}")
+    return ("\n\n" + "\n".join(lines)) if lines else ""
+
+
 def format_card_back(card: TermCard) -> str:
     tradeoff = card.term.tradeoff_when_not_to_use or "No especificado."
     scopes = getattr(card.term, "other_scopes", ()) or ()
@@ -176,12 +193,14 @@ def format_card_back(card: TermCard) -> str:
     if scopes:
         scopes_str = ", ".join(escape_html(s) for s in scopes)
         scopes_block = f"\n\n🌐 <b>Otros ámbitos del término:</b>\n<i>{scopes_str}</i>"
+    meta_block = _format_epistemological_meta(card.term)
     return (
         f"📖 <b>{escape_html(card.term.term)}</b>\n"
         f"🏷️ <i>{escape_html(card.category.name)} (Zoom {int(card.category.zoom_level)})</i>\n\n"
         f"📋 <b>Definición Técnica:</b>\n{escape_html(card.term.technical_definition)}\n\n"
         f"💡 <b>Analogía Cotidiana:</b>\n{escape_html(card.term.daily_analogy)}\n\n"
         f"⚠️ <b>Cuándo NO usarlo (Trade-off):</b>\n{escape_html(tradeoff)}"
+        f"{meta_block}"
         f"{scopes_block}"
     )
 
@@ -222,8 +241,9 @@ def format_captured_term(result) -> str:
             + "\n".join(items)
         )
 
+    meta_block = _format_epistemological_meta(card.term)
     settings_hint = (
-        "\n\n⚙️ <i>En <b>Configuración (Ajustes)</b> de la Web App puedes elegir qué Áreas y Categorías específicas deseas estudiar.</i>"
+        "\n\n⚙️ <i>En el <b>Explorador y Mazo</b> de la Web App puedes seleccionar qué Áreas, Categorías y Términos individuales deseas estudiar.</i>"
     )
 
     return (
@@ -234,6 +254,7 @@ def format_captured_term(result) -> str:
         f"📋 <b>Definición Técnica:</b>\n{escape_html(card.term.technical_definition)}\n\n"
         f"💡 <b>Analogía Cotidiana:</b>\n{escape_html(card.term.daily_analogy)}\n\n"
         f"⚠️ <b>Trade-off / Cuándo NO usarlo:</b>\n{escape_html(tradeoff)}"
+        f"{meta_block}"
         f"{other_html}"
         f"{settings_hint}"
     )

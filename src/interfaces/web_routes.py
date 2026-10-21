@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from src.application.use_cases import GlossaryService, QuotaExceededError, TermCard
 from src.config import settings
-from src.domain.models import Category, Rating
+from src.domain.models import DEFAULT_LIMITS_LABEL, Category, Rating, UserTermCustomization
 from src.infrastructure.ai_enricher import EnrichmentError, InvalidTermError
 
 logger = logging.getLogger("web_routes")
@@ -143,6 +143,7 @@ class SettingsUpdateIn(BaseModel):
     theme: Optional[str] = Field(None, pattern="^(light|dark)$")
     step_by_step_reveal: Optional[bool] = None
     active_category_ids: Optional[list[int]] = None
+    excluded_term_ids: Optional[list[int]] = None
 
 
 class UserUpsertIn(BaseModel):
@@ -156,11 +157,40 @@ class UserUpsertIn(BaseModel):
     seed_all_terms: bool = False
 
 
+class CustomizationUpdateIn(BaseModel):
+    custom_definition: Optional[str] = None
+    custom_analogy: Optional[str] = None
+    custom_limits: Optional[str] = None
+    personal_notes: Optional[str] = None
+
+
+class ProposalSubmitIn(BaseModel):
+    proposal_justification: str = Field(..., min_length=10)
+    proposal_source: str = Field(..., min_length=3)
+    custom_definition: Optional[str] = None
+    custom_analogy: Optional[str] = None
+    custom_limits: Optional[str] = None
+
+
+class ProposalResolveIn(BaseModel):
+    user_id: int
+    action: str = Field(..., pattern="^(merge|reject)$")
+    admin_notes: Optional[str] = None
+
+
 def _cat_dto(
     c: Category,
     counts: dict[int, int] | None = None,
     mastery_map: dict[int, dict] | None = None,
+    zoom_labels: tuple[str, ...] | list[str] | None = None,
+    limits_label: str = DEFAULT_LIMITS_LABEL,
 ) -> dict:
+    zl_index = max(0, min(3, int(c.zoom_level) - 1))
+    resolved_zoom_label = (
+        zoom_labels[zl_index]
+        if zoom_labels and len(zoom_labels) == 4 and zoom_labels[zl_index]
+        else c.zoom_level.label
+    )
     d = {
         "id": c.id,
         "macro_area": c.macro_area,
@@ -168,7 +198,8 @@ def _cat_dto(
         "description": c.description,
         "simple_explanation": c.simple_explanation,
         "zoom_level": int(c.zoom_level),
-        "zoom_label": c.zoom_level.label,
+        "zoom_label": resolved_zoom_label,
+        "limits_label": limits_label,
     }
     if counts is not None:
         d["term_count"] = counts.get(c.id, 0)
@@ -180,16 +211,46 @@ def _cat_dto(
 def _card_dto(card: TermCard, service: GlossaryService, with_preview: bool = False, threshold: int = 21) -> dict:
     from src.domain import srs_scheduler
     t, s = card.term, card.srs
+    custom = getattr(card, "customization", None)
+    lim_lbl = getattr(card, "limits_label", DEFAULT_LIMITS_LABEL)
+    eff_def = custom.custom_definition if (custom and custom.custom_definition) else t.technical_definition
+    eff_ana = custom.custom_analogy if (custom and custom.custom_analogy) else t.daily_analogy
+    eff_lim = custom.custom_limits if (custom and custom.custom_limits is not None) else t.tradeoff_when_not_to_use
+    pers_notes = custom.personal_notes if custom else None
+    is_cust = bool(custom and (custom.custom_definition or custom.custom_analogy or custom.custom_limits or custom.personal_notes))
+
     d = {
         "id": t.id,
         "term": t.term,
         "category_id": t.category_id,
         "category": card.category.name,
         "macro_area": card.category.macro_area,
+        "zoom_level": int(card.category.zoom_level),
+        "limits_label": lim_lbl,
         "technical_definition": t.technical_definition,
         "daily_analogy": t.daily_analogy,
         "tradeoff_when_not_to_use": t.tradeoff_when_not_to_use,
+        "effective_definition": eff_def,
+        "effective_analogy": eff_ana,
+        "effective_limits": eff_lim,
+        "personal_notes": pers_notes,
+        "is_customized": is_cust,
+        "customization": {
+            "custom_definition": custom.custom_definition,
+            "custom_analogy": custom.custom_analogy,
+            "custom_limits": custom.custom_limits,
+            "personal_notes": custom.personal_notes,
+            "status": custom.status,
+            "proposal_justification": custom.proposal_justification,
+            "proposal_source": custom.proposal_source,
+            "arbitration_score": custom.arbitration_score,
+            "arbitration_verdict": custom.arbitration_verdict,
+            "updated_at": custom.updated_at.isoformat() if custom.updated_at else None,
+        } if custom else None,
         "other_scopes": list(getattr(t, "other_scopes", ()) or ()),
+        "canonical_source": getattr(t, "canonical_source", "") or "",
+        "parent_term": getattr(t, "parent_term", None),
+        "related_terms": list(getattr(t, "related_terms", ()) or ()),
         "created_at": t.created_at.isoformat() if t.created_at else None,
         "srs": {
             "interval_days": s.interval_days,
@@ -302,10 +363,14 @@ def init_web_routes(service_factory):
         for a in service.list_areas():
             cat_ids = {c.id for c in a.categories}
             area_states = [states_map[t.id] for t in terms if t.category_id in cat_ids and t.id in states_map]
+            a_limits = getattr(a, "limits_label", DEFAULT_LIMITS_LABEL)
             result.append({
                 "name": a.name,
+                "description": getattr(a, "description", "") or "",
+                "zoom_labels": list(getattr(a, "zoom_labels", ()) or ()),
+                "limits_label": a_limits,
                 "mastery": srs_scheduler.compute_mastery_metrics(area_states, today, maturity_threshold_days=threshold),
-                "categories": [_cat_dto(c, counts, mastery_map) for c in a.categories],
+                "categories": [_cat_dto(c, counts, mastery_map, zoom_labels=getattr(a, "zoom_labels", None), limits_label=a_limits) for c in a.categories],
             })
         return result
 
@@ -314,11 +379,21 @@ def init_web_routes(service_factory):
         service: GlossaryService = service_factory()
         sess = require_web_pin(request, _pin, service=service)
         counts = service.repo.count_terms_by_category()
+        macro_map = service.repo.list_macro_areas() if hasattr(service.repo, "list_macro_areas") else {}
         try:
             mastery_map = service.mastery_by_category(user_id=sess["user_id"])
         except TypeError:
             mastery_map = service.mastery_by_category()
-        return [_cat_dto(c, counts, mastery_map) for c in service.repo.list_categories()]
+        return [
+            _cat_dto(
+                c,
+                counts,
+                mastery_map,
+                zoom_labels=macro_map[c.macro_area].zoom_labels if c.macro_area in macro_map else None,
+                limits_label=macro_map[c.macro_area].limits_label if c.macro_area in macro_map else DEFAULT_LIMITS_LABEL,
+            )
+            for c in service.repo.list_categories()
+        ]
 
     @router.get("/terms")
     def get_terms(request: Request, _pin: str = Header(None, alias="X-Web-Pin")):
@@ -347,6 +422,92 @@ def init_web_routes(service_factory):
         if not card:
             raise HTTPException(404, "Término no encontrado")
         return _card_dto(card, service, threshold=threshold)
+
+    @router.get("/terms/{term_id}/customization")
+    def get_term_customization(term_id: int, request: Request, _pin: str = Header(None, alias="X-Web-Pin")):
+        service: GlossaryService = service_factory()
+        sess = require_web_pin(request, _pin, service=service)
+        uid = sess["user_id"]
+        custom = service.get_user_customization(uid, term_id)
+        if not custom:
+            return {"user_id": uid, "term_id": term_id, "is_customized": False}
+        return {
+            "user_id": uid,
+            "term_id": term_id,
+            "is_customized": bool(custom.custom_definition or custom.custom_analogy or custom.custom_limits or custom.personal_notes),
+            "custom_definition": custom.custom_definition,
+            "custom_analogy": custom.custom_analogy,
+            "custom_limits": custom.custom_limits,
+            "personal_notes": custom.personal_notes,
+            "status": custom.status,
+            "proposal_justification": custom.proposal_justification,
+            "proposal_source": custom.proposal_source,
+            "arbitration_score": custom.arbitration_score,
+            "arbitration_verdict": custom.arbitration_verdict,
+            "updated_at": custom.updated_at.isoformat() if custom.updated_at else None,
+        }
+
+    @router.put("/terms/{term_id}/customization")
+    def update_term_customization(
+        term_id: int,
+        body: CustomizationUpdateIn,
+        request: Request,
+        _pin: str = Header(None, alias="X-Web-Pin"),
+    ):
+        service: GlossaryService = service_factory()
+        sess = require_web_pin(request, _pin, service=service)
+        uid = sess["user_id"]
+        custom = service.save_user_customization(
+            user_id=uid,
+            term_id=term_id,
+            custom_definition=body.custom_definition,
+            custom_analogy=body.custom_analogy,
+            custom_limits=body.custom_limits,
+            personal_notes=body.personal_notes,
+        )
+        return {
+            "saved": True,
+            "user_id": uid,
+            "term_id": term_id,
+            "custom_definition": custom.custom_definition if custom else None,
+            "custom_analogy": custom.custom_analogy if custom else None,
+            "custom_limits": custom.custom_limits if custom else None,
+            "personal_notes": custom.personal_notes if custom else None,
+        }
+
+    @router.delete("/terms/{term_id}/customization")
+    def delete_term_customization(term_id: int, request: Request, _pin: str = Header(None, alias="X-Web-Pin")):
+        service: GlossaryService = service_factory()
+        sess = require_web_pin(request, _pin, service=service)
+        uid = sess["user_id"]
+        deleted = service.delete_user_customization(uid, term_id)
+        return {"reverted_to_canonical": deleted, "user_id": uid, "term_id": term_id}
+
+    @router.post("/terms/{term_id}/propose-canonical")
+    def propose_canonical(
+        term_id: int,
+        body: ProposalSubmitIn,
+        request: Request,
+        _pin: str = Header(None, alias="X-Web-Pin"),
+    ):
+        service: GlossaryService = service_factory()
+        sess = require_web_pin(request, _pin, service=service)
+        uid = sess["user_id"]
+        try:
+            res = service.submit_canonical_proposal(
+                user_id=uid,
+                term_id=term_id,
+                justification=body.proposal_justification,
+                source=body.proposal_source,
+                custom_definition=body.custom_definition,
+                custom_analogy=body.custom_analogy,
+                custom_limits=body.custom_limits,
+            )
+            return res
+        except KeyError as exc:
+            raise HTTPException(404, str(exc))
+        except Exception as exc:
+            raise HTTPException(400, f"Error al procesar propuesta: {exc}")
 
     @router.get("/review/due")
     def review_due(request: Request, limit: Optional[int] = None, _pin: str = Header(None, alias="X-Web-Pin")):
@@ -574,6 +735,9 @@ def init_web_routes(service_factory):
             "Macro_Area",
             "Categoria_Ambito",
             "Zoom_Nivel",
+            "Fuente_Canonica",
+            "Hiperonimo_Padre",
+            "Terminos_Relacionados",
             "Definicion_Tecnica",
             "Analogia_Cotidiana",
             "Tradeoff_Cuando_No_Usar",
@@ -593,6 +757,9 @@ def init_web_routes(service_factory):
                 c.category.macro_area,
                 c.category.name,
                 int(c.category.zoom_level),
+                getattr(c.term, "canonical_source", "") or "",
+                getattr(c.term, "parent_term", "") or "",
+                "; ".join(getattr(c.term, "related_terms", ()) or ()),
                 c.term.technical_definition,
                 c.term.daily_analogy,
                 c.term.tradeoff_when_not_to_use or "",
@@ -610,5 +777,34 @@ def init_web_routes(service_factory):
             media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": 'attachment; filename="glosario_srs_bi_export.csv"'},
         )
+
+    @router.get("/admin/proposals")
+    def list_admin_proposals(request: Request, _pin: str = Header(None, alias="X-Web-Pin")):
+        service: GlossaryService = service_factory()
+        sess = require_web_pin(request, _pin, service=service)
+        if not sess["is_admin"]:
+            raise HTTPException(403, "Solo el Administrador puede revisar propuestas de arbitraje.")
+        return service.list_pending_proposals()
+
+    @router.post("/admin/proposals/{term_id}/resolve")
+    def resolve_admin_proposal(
+        term_id: int,
+        body: ProposalResolveIn,
+        request: Request,
+        _pin: str = Header(None, alias="X-Web-Pin"),
+    ):
+        service: GlossaryService = service_factory()
+        sess = require_web_pin(request, _pin, service=service)
+        if not sess["is_admin"]:
+            raise HTTPException(403, "Solo el Administrador puede resolver propuestas.")
+        success = service.resolve_proposal(
+            user_id=body.user_id,
+            term_id=term_id,
+            action=body.action,
+            admin_notes=body.admin_notes,
+        )
+        if not success:
+            raise HTTPException(404, "Propuesta no encontrada o acción no aplicable")
+        return {"resolved": True, "action": body.action, "term_id": term_id, "user_id": body.user_id}
 
     return router

@@ -6,51 +6,94 @@
   <meta name="theme-color" content="#2563eb">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Glosario SRS">
-  <title>Glosario de Diseño de Software y Arquitectura</title>
+  <title>Compendio Canónico Multidisciplinar · Sistema SRS</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/icon.svg">
-  <link rel="stylesheet" href="/styles.css?v=2.7">
+  <link rel="stylesheet" href="/styles.css?v=3.1">
 </head>
 <body>
   <div class="container">
     <header class="app-header">
-      <div>
-        <h1>Compendio Técnico de Diseño de Software y Arquitectura</h1>
-        <p class="subtitle" id="subtitle">Principios, Patrones GoF, Arquitectura, DDD, Rendimiento y Resiliencia</p>
+      <div class="header-main">
+        <div>
+          <h1 id="app-title">Compendio Canónico Multidisciplinar y Sistema SRS</h1>
+          <p class="subtitle" id="subtitle">Arquitectura de Conocimiento Basada en Fuentes Primarias, Granularidad Ontológica Adaptativa y Repetición Espaciada</p>
+        </div>
+        <div class="header-actions">
+          <button class="btn btn-primary" id="btn-header-add">+ Capturar Término</button>
+        </div>
       </div>
     </header>
 
     <nav class="tabs" role="tablist">
       <button class="tab active" data-view="guide" role="tab">
-        <span class="tab-ico">🧭</span><span>Guía</span>
-      </button>
-      <button class="tab" data-view="table" role="tab">
-        <span class="tab-ico">📚</span><span>Compendio</span>
+        <span class="tab-ico">🌲</span><span>Explorador y Mazo</span>
       </button>
       <button class="tab" data-view="train" role="tab">
         <span class="tab-ico">🧠</span><span>Entrenar</span><span class="badge" id="due-badge" hidden>0</span>
       </button>
+      <button class="tab" data-view="table" role="tab">
+        <span class="tab-ico">📚</span><span>Compendio</span>
+      </button>
       <button class="tab" data-view="settings" role="tab">
-        <span class="tab-ico">⚙️</span><span>Ajustes</span>
+        <span class="tab-ico">⚙️</span><span>Preferencias</span>
+      </button>
+      <button class="tab" data-view="admin" id="tab-admin" role="tab">
+        <span class="tab-ico">🛡️</span><span>Admin</span>
       </button>
     </nav>
 
-    <!-- ============ VISTA 1: Guía de Áreas y Categorías ============ -->
-    <section id="view-guide" class="view active" aria-label="Guía de Áreas y Categorías">
-      <p class="intro">Las categorías van del <b>zoom más cercano</b> (una línea de código) al <b>más lejano</b>
-        (los servidores en producción). Toca una categoría para entender qué agrupa antes de ver sus términos.</p>
-      <div class="zoom-legend" id="zoom-legend"></div>
-      <div id="areas"></div>
+    <!-- ============ VISTA 1: Explorador Taxonómico y Configurador de Mazo (Master-Detail) ============ -->
+    <section id="view-guide" class="view active" aria-label="Explorador Taxonómico y Mazo de Estudio">
+      <div class="explorer-top-bar">
+        <div class="explorer-top-info">
+          <p class="intro" id="explorer-intro">
+            Explora el árbol taxonómico por <b>Macro-Área</b> y <b>Nivel de Granularidad Ontológica (Zoom)</b>.
+            Marca o desmarca categorías completas o términos individuales para personalizar tu <b>Mazo Activo de Estudio SRS</b>.
+          </p>
+        </div>
+        <div class="deck-summary-bar">
+          <span class="deck-summary-pill" id="deck-summary-label">Mazo activo: Todas las categorías</span>
+          <button type="button" class="btn btn-sm" id="btn-cats-all">Activar todo el catálogo</button>
+          <button type="button" class="btn btn-sm btn-primary" id="btn-save-cats">💾 Guardar Mazo de Estudio</button>
+        </div>
+      </div>
+
+      <!-- Facetas de Macro-Área -->
+      <div class="facet-bar" id="area-facets" aria-label="Filtro por Macro-Área"></div>
+
+      <!-- Leyenda y Facetas de Granularidad Ontológica (Zoom adaptativo por disciplina) -->
+      <div class="zoom-legend" id="zoom-legend" aria-label="Filtro por Nivel de Granularidad Ontológica"></div>
+
+      <!-- Vista dividida Master-Detail -->
+      <div class="explorer-split">
+        <!-- Panel Maestro: Árbol Jerárquico y Selección Granular de Mazo -->
+        <aside class="explorer-master" aria-label="Árbol de Macro-Áreas, Categorías y Términos">
+          <div class="master-search-box">
+            <input type="search" id="explorer-search" placeholder="Filtrar árbol por término o categoría…" autocomplete="off">
+          </div>
+          <div id="areas" class="master-tree-list"></div>
+        </aside>
+
+        <!-- Panel de Detalle: Visor de Ficha Canónica, Fuente Cero y Árbol Ontológico -->
+        <main class="explorer-detail" id="explorer-detail" aria-live="polite">
+          <div class="detail-placeholder">
+            <div class="empty-ico">🌲</div>
+            <h3>Selecciona una Categoría o un Término del Árbol</h3>
+            <p>A la izquierda puedes navegar la jerarquía disciplinar, activar o excluir elementos de tu mazo personal y visualizar aquí su definición canónica, fuente primaria y árbol de relaciones ontológicas.</p>
+          </div>
+        </main>
+      </div>
     </section>
 
-    <!-- ============ VISTA 2: Compendio (Tabla) ============ -->
+    <!-- ============ VISTA 2: Compendio Tabular ============ -->
     <section id="view-table" class="view" aria-label="Compendio">
       <div class="toolbar">
-        <input type="search" id="search" placeholder="Buscar término, definición o analogía…" autocomplete="off">
+        <input type="search" id="search" placeholder="Buscar término, definición, fuente canónica o analogía…" autocomplete="off">
         <select id="cat-filter"><option value="">Todas las categorías</option></select>
         <div class="toolbar-actions">
-          <button class="btn btn-primary" id="btn-add">+ Agregar término rápido</button>
+          <button class="btn btn-primary" id="btn-add">+ Capturar término</button>
           <button class="btn print-btn" id="btn-print">Imprimir / Guardar PDF</button>
         </div>
       </div>
@@ -58,11 +101,11 @@
       <table class="glossary">
         <thead>
           <tr>
-            <th>Categoría</th>
-            <th>Término</th>
-            <th>Definición Técnica Detallada</th>
-            <th>Analogía de la Vida Cotidiana</th>
-            <th>Cuándo NO usarlo (Trade-off)</th>
+            <th>Categoría y Área</th>
+            <th>Término y Topología</th>
+            <th>Definición Técnica y Fuente Canónica</th>
+            <th>Analogía Cotidiana</th>
+            <th>Límites Ontológicos y Condiciones de Inaplicabilidad</th>
           </tr>
         </thead>
         <tbody id="terms-body"></tbody>
@@ -78,8 +121,8 @@
 
       <div id="train-empty" class="empty" hidden>
         <div class="empty-ico">✅</div>
-        <h2>¡Nada pendiente por hoy!</h2>
-        <p>Vuelve mañana o agrega términos nuevos desde el Compendio o Telegram.</p>
+        <h2>¡Nada pendiente por hoy en tu mazo activo!</h2>
+        <p>Vuelve mañana, ajusta tu selección en <b>Explorador y Mazo</b> o captura nuevos conceptos.</p>
       </div>
 
       <div id="train-area" hidden>
@@ -92,7 +135,7 @@
           <p class="fc-hint" id="fc-hint">Intenta explicarlo en voz alta · toca para revelar</p>
           <div class="fc-answer" id="fc-answer" hidden>
             <div class="fc-block" id="fc-block-def">
-              <h3>Definición técnica</h3>
+              <h3>Definición técnica canónica</h3>
               <p id="fc-def"></p>
             </div>
             <div class="fc-block analog" id="fc-block-analog">
@@ -100,8 +143,13 @@
               <p id="fc-analog"></p>
             </div>
             <div class="fc-block tradeoff" id="fc-block-tradeoff">
-              <h3>Trade-off · cuándo NO usarlo</h3>
+              <h3>Límites y Condiciones de Inaplicabilidad</h3>
               <p id="fc-tradeoff"></p>
+            </div>
+            <div class="fc-block source-block" id="fc-block-meta" hidden>
+              <h3>Respaldo Epistemológico y Topología Ontológica</h3>
+              <p id="fc-source"></p>
+              <div id="fc-relations" class="fc-relations"></div>
             </div>
           </div>
         </article>
@@ -115,13 +163,13 @@
       </div>
     </section>
 
-    <!-- ============ VISTA 4: Configuración y Gestión de Registros ============ -->
-    <section id="view-settings" class="view" aria-label="Configuración">
+    <!-- ============ VISTA 4: Preferencias Personales del Estudiante ============ -->
+    <section id="view-settings" class="view" aria-label="Preferencias de Estudio">
       <div class="settings-grid">
         <!-- Tarjeta 1: Algoritmo SRS y Enfoque -->
         <div class="settings-card">
-          <h3>🧠 Parámetros del Algoritmo SRS y Enfoque</h3>
-          <p class="settings-sub">Sincronizados en PostgreSQL para la Web App y el Bot de Telegram.</p>
+          <h3>🧠 Parámetros Personales del Algoritmo SRS</h3>
+          <p class="settings-sub">Sincronizados en PostgreSQL para tu sesión en la Web App y el Bot de Telegram.</p>
           <form id="form-settings">
             <div class="form-row">
               <label for="set-session-limit">Tarjetas por tanda diaria (1 – 50)</label>
@@ -136,10 +184,10 @@
               <input type="number" id="set-initial-ef" min="1.3" max="4.0" step="0.1" value="2.5" required>
             </div>
             <div class="form-row">
-              <label for="set-focused-mode">Modo de Estudio de las Cola SRS</label>
+              <label for="set-focused-mode">Modo de Secuenciación de la Cola SRS</label>
               <select id="set-focused-mode">
                 <option value="true">🎯 Foco Estricto (Dominar 1 categoría a la vez)</option>
-                <option value="false">🌐 Global / Mixto (Mezclar todas las áreas)</option>
+                <option value="false">🌐 Global / Mixto (Mezclar todas las áreas activas)</option>
               </select>
             </div>
             <div class="form-row">
@@ -152,24 +200,24 @@
             <div class="form-row">
               <label for="set-step-reveal">Revelación de Respuestas en Flashcards</label>
               <select id="set-step-reveal">
-                <option value="false">⚡ Completa en 1 toque (Definición + Analogía + Trade-off)</option>
-                <option value="true">🪜 Paso a paso (1° Definición → 2° Analogía → 3° Trade-off)</option>
+                <option value="false">⚡ Completa en 1 toque (Definición + Analogía + Límites)</option>
+                <option value="true">🪜 Paso a paso (1° Definición → 2° Analogía → 3° Límites)</option>
               </select>
             </div>
             <div class="settings-actions">
-              <button type="submit" class="btn btn-primary" id="btn-save-settings">💾 Guardar Configuración</button>
+              <button type="submit" class="btn btn-primary" id="btn-save-settings">💾 Guardar Preferencias</button>
             </div>
           </form>
         </div>
 
         <!-- Tarjeta 2: Seguridad y Sesión Local -->
         <div class="settings-card">
-          <h3>🔒 Seguridad y Acceso en este Dispositivo</h3>
-          <p class="settings-sub">Administra el PIN almacenado localmente para autenticar peticiones contra el backend.</p>
+          <h3>🔒 Seguridad y Sesión en este Dispositivo</h3>
+          <p class="settings-sub">Administra el PIN almacenado localmente para autenticar tus peticiones.</p>
           <div class="pin-status-box">
-            <div>Estado del PIN local: <b id="pin-status-label">Activo</b></div>
-            <p style="font-size:12px; color:#64748b; margin:6px 0 0 0;">
-              El servidor protege todos los endpoints mediante el encabezado <code>X-Web-Pin</code> y bloqueo anti fuerza bruta.
+            <div>Estado de autenticación: <b id="pin-status-label">Activo</b></div>
+            <p class="pin-status-help">
+              Todos los endpoints verifican el encabezado <code>X-Web-Pin</code> con protección contra fuerza bruta.
             </p>
           </div>
           <div class="settings-actions" style="justify-content: flex-start; margin-top: 14px;">
@@ -179,45 +227,55 @@
         </div>
       </div>
 
-      <!-- Tarjeta 2.5: Selección de Áreas y Categorías a Estudiar -->
+      <!-- Resumen rápido de Mazo con enlace directo al Explorador -->
       <div class="settings-card" style="margin-top: 20px;">
         <div class="admin-header">
           <div>
-            <h3>🎯 Selección de Áreas y Categorías a Estudiar</h3>
-            <p class="settings-sub">La IA registra todas las interpretaciones posibles de cada término. Aquí eliges qué categorías y áreas deseas repasar activamente en tus tandas (si no marcas ninguna o marcas todas, se estudia todo el catálogo).</p>
+            <h3>🌲 Configuración Granular de tu Mazo de Estudio</h3>
+            <p class="settings-sub">Puedes activar o excluir Macro-Áreas, Categorías y Términos individuales directamente desde el árbol interactivo en <b>Explorador y Mazo</b> o desde la matriz rápida inferior.</p>
           </div>
           <div style="display:flex; gap:8px; flex-wrap:wrap;">
-            <button type="button" class="btn btn-sm" id="btn-cats-all">Seleccionar todas</button>
-            <button type="button" class="btn btn-sm btn-primary" id="btn-save-cats">💾 Guardar Selección</button>
+            <button type="button" class="btn btn-sm" id="btn-goto-explorer">Ir al Explorador Interactivo</button>
           </div>
         </div>
         <div id="study-categories-selector" class="study-cats-grid" style="margin-top: 12px;"></div>
       </div>
+    </section>
 
-      <!-- Tarjeta 3: Gestión de Registros (Reenviar a la IA o Eliminar) -->
-      <div class="settings-card" style="margin-top: 20px;">
+    <!-- ============ VISTA 5: Consola de Administración del Sistema ============ -->
+    <section id="view-admin" class="view" aria-label="Consola de Administración">
+      <!-- Sub-navegación de consola administrativa -->
+      <div class="admin-console-banner">
+        <div>
+          <h2>🛡️ Consola de Administración y Gobernanza</h2>
+          <p class="settings-sub">Curaduría ontológica del catálogo global, control de acceso multi-tenant y analítica de negocio (BI).</p>
+        </div>
+        <span class="badge-neutral" id="admin-count-badge">0 registros</span>
+      </div>
+
+      <!-- Tarjeta Admin 1: Curaduría del Catálogo Canónico (Reenviar a la IA o Eliminar) -->
+      <div class="settings-card" style="margin-top: 16px;">
         <div class="admin-header">
           <div>
-            <h3>🛠️ Gestión de Registros (Reenviar a la IA / Eliminar)</h3>
-            <p class="settings-sub">Regenera cualquier ficha con el estándar actual de la IA (solo Admin) o elimina/desvincula registros.</p>
+            <h3>🛠️ Curaduría de Registros (Regeneración con Fuentes Primarias / Eliminación)</h3>
+            <p class="settings-sub">Audita fichas existentes, reenvíalas al motor de inferencia para actualizar su definición y fuente canónica, o elimínalas del catálogo.</p>
           </div>
-          <span class="badge-neutral" id="admin-count-badge">0 registros</span>
         </div>
 
         <div class="toolbar" style="margin-top: 12px;">
-          <input type="search" id="admin-search" placeholder="Filtrar registro por nombre o categoría…" autocomplete="off">
+          <input type="search" id="admin-search" placeholder="Filtrar registro por término, categoría o fuente canónica…" autocomplete="off">
           <select id="admin-cat-filter"><option value="">Todas las categorías</option></select>
         </div>
 
         <div id="admin-records-list" class="admin-records-list"></div>
       </div>
 
-      <!-- Tarjeta 4: Gestión Multi-Usuario y Cuotas IA (Admin) -->
+      <!-- Tarjeta Admin 2: Gestión Multi-Usuario y Cuotas IA -->
       <div class="settings-card" id="admin-users-section" style="margin-top: 20px;">
         <div class="admin-header">
           <div>
-            <h3>👥 Gestión de Usuarios, Whitelist de Telegram y Cuotas IA</h3>
-            <p class="settings-sub">Aprueba usuarios por su Telegram Chat ID, asigna su PIN Web personal y limita sus generaciones diarias con IA para proteger tu API Key.</p>
+            <h3>👥 Gestión Multi-Tenant, Whitelist de Telegram y Cuotas Diarias de IA</h3>
+            <p class="settings-sub">Autoriza usuarios por Telegram Chat ID, asigna su PIN Web personal y regula su límite diario de llamadas a Gemini API.</p>
           </div>
         </div>
         <form id="form-admin-user" class="user-form-grid" style="margin-top: 12px;">
@@ -226,23 +284,37 @@
           <input type="text" id="usr-pin" placeholder="PIN Web personal (opcional)" maxlength="64">
           <input type="number" id="usr-quota" placeholder="Cuota IA/día" min="0" max="9999" value="10" title="Límite diario de términos nuevos con IA">
           <select id="usr-role">
-            <option value="user">Rol: Usuario (Lectura + SRS propio)</option>
-            <option value="admin">Rol: Admin (Control total)</option>
+            <option value="user">Rol: Estudiante (Mazo y SRS propio)</option>
+            <option value="admin">Rol: Administrador (Gobernanza total)</option>
           </select>
           <label class="usr-seed-label" title="Copia las tarjetas actuales del catálogo global al mazo de este usuario">
             <input type="checkbox" id="usr-seed" checked> Clonar catálogo actual
           </label>
-          <button type="submit" class="btn btn-sm btn-primary">➕ Guardar / Aprobar Usuario</button>
+          <button type="submit" class="btn btn-sm btn-primary">➕ Guardar / Autorizar Usuario</button>
         </form>
         <div id="admin-users-list" class="admin-records-list" style="margin-top: 12px;"></div>
       </div>
 
-      <!-- Tarjeta 5: Inteligencia de Negocios (BI Centralizado) -->
+      <!-- Tarjeta Admin 2: Cola de Propuestas y Arbitraje Canónico -->
+      <div class="settings-card" id="admin-proposals-section" style="margin-top: 20px;">
+        <div class="admin-header">
+          <div>
+            <h3>⚖️ Cola de Propuestas y Arbitraje Canónico</h3>
+            <p class="settings-sub">Revisa, audita con IA y fusiona (Merge) mejoras ontológicas respaldadas por Fuentes Primarias enviadas por estudiantes.</p>
+          </div>
+          <div>
+            <button type="button" class="btn btn-sm" id="btn-refresh-proposals">🔄 Refrescar Propuestas</button>
+          </div>
+        </div>
+        <div id="admin-proposals-list" class="admin-records-list" style="margin-top: 12px;"></div>
+      </div>
+
+      <!-- Tarjeta Admin 3: Inteligencia de Negocios (BI Centralizado) -->
       <div class="settings-card" id="admin-bi-section" style="margin-top: 20px;">
         <div class="admin-header">
           <div>
-            <h3>📊 Inteligencia de Negocios (BI) y Analítica Centralizada</h3>
-            <p class="settings-sub">Métricas agregadas de dificultad terminológica, dominio por Macro-Área y exportación completa para BI (Excel / PowerBI).</p>
+            <h3>📊 Inteligencia de Negocios (BI) y Auditoría de Aprendizaje</h3>
+            <p class="settings-sub">Métricas agregadas de puntos ciegos conceptuales, dominio por Macro-Área y exportación completa en CSV (UTF-8 BOM).</p>
           </div>
           <div style="display:flex; gap:8px; flex-wrap:wrap;">
             <button type="button" class="btn btn-sm" id="btn-refresh-bi">🔄 Actualizar BI</button>
@@ -265,17 +337,69 @@
     </form>
   </dialog>
 
-  <!-- Diálogo: agregar término rápido -->
+  <!-- Diálogo: capturar término con desambiguación semántica -->
   <dialog id="dlg-add">
     <form id="form-add">
-      <h2>Agregar término</h2>
-      <p class="muted">Escribe solo el nombre. La IA generará automáticamente todas las interpretaciones canónicas del concepto.</p>
-      <input id="add-input" maxlength="80" placeholder="Ej. Outbox Pattern, Contraprestativo, Proceso" required autocomplete="off">
+      <h2>Capturar concepto en el Compendio Canónico</h2>
+      <p class="muted">
+        El motor de inferencia descarta acepciones coloquiales o de diccionario general (RAE) y documenta el concepto con respaldo en <b>Fuentes Primarias</b>.
+      </p>
+      <div class="dlg-field">
+        <label for="add-input">Término o Concepto</label>
+        <input id="add-input" maxlength="80" placeholder="Ej. Monolito, Outbox Pattern, Contraprestativo, Proceso" required autocomplete="off">
+      </div>
+      <div class="dlg-field" style="margin-top: 10px;">
+        <label for="add-scope-input">Indicio de Desambiguación Semántica <span class="muted">(Opcional)</span></label>
+        <input id="add-scope-input" maxlength="60" placeholder="Ej. Software, Derecho, Economía (orienta el dominio sin forzar una categoría errónea)" autocomplete="off">
+        <small class="field-hint">Si indicas un área aproximada, la IA la usará para filtrar el dominio pero clasificará el término en su Macro-Área y Categoría canónicas verdaderas.</small>
+      </div>
       <div id="add-status" class="add-status"></div>
       <div id="add-result"></div>
       <div class="dlg-actions">
         <button type="button" class="btn" id="add-cancel">Cerrar</button>
-        <button type="submit" class="btn btn-primary" id="add-submit">Generar ficha</button>
+        <button type="submit" class="btn btn-primary" id="add-submit">Generar ficha canónica</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Diálogo: proponer mejora o corrección epistémica al Catálogo Canónico -->
+  <dialog id="dlg-propose">
+    <form id="form-propose">
+      <h2>⚖️ Proponer Mejora al Catálogo Canónico</h2>
+      <p class="muted">
+        Las propuestas son evaluadas por un <b>Árbitro de Rigor Epistémico</b> y revisadas por la Administración antes de ser incorporadas al Catálogo Canónico Global. Se requiere respaldo obligatorio en <b>Fuentes Primarias Oficiales</b>.
+      </p>
+      <input type="hidden" id="prop-term-id">
+      <div class="dlg-field">
+        <label for="prop-term-name">Concepto en Revisión</label>
+        <input type="text" id="prop-term-name" readonly style="opacity: 0.85; font-weight: 600;">
+      </div>
+      <div class="dlg-field" style="margin-top: 10px;">
+        <label for="prop-justification">Justificación Epistémica y Argumentación Teórica <span class="req">*</span></label>
+        <textarea id="prop-justification" rows="3" placeholder="Explica detalladamente por qué la definición o analogía actual es imprecisa o cómo tu versión perfecciona el rigor conceptual..." required></textarea>
+        <small class="field-hint">Mínimo 10 caracteres. Argumenta con fundamentos de la disciplina.</small>
+      </div>
+      <div class="dlg-field" style="margin-top: 10px;">
+        <label for="prop-source">Cita de Fuente Primaria Oficial (Fuente Cero) <span class="req">*</span></label>
+        <input id="prop-source" placeholder="Ej. IEEE Std 1074-2006, RFC 9110, Tratado de Derecho Civil T.II (Diez-Picazo), etc." required autocomplete="off">
+        <small class="field-hint">Estándares oficiales (ISO/IEEE/RFC/W3C), códigos legales vigentes o tratados seminales con Autor, Obra y Capítulo.</small>
+      </div>
+      <div class="dlg-field" style="margin-top: 10px;">
+        <label for="prop-def">Definición Técnica Mejorada <span class="muted">(Opcional si solo propones analogía/límites)</span></label>
+        <textarea id="prop-def" rows="3" placeholder="Redacción formal, unívoca y con vocabulario específico de la disciplina..."></textarea>
+      </div>
+      <div class="dlg-field" style="margin-top: 10px;">
+        <label for="prop-analog">Analogía Cotidiana Mejorada <span class="muted">(Opcional)</span></label>
+        <textarea id="prop-analog" rows="2" placeholder="Analogía de la vida real que preserve el isomorfismo estructural..."></textarea>
+      </div>
+      <div class="dlg-field" style="margin-top: 10px;">
+        <label for="prop-limits" id="prop-limits-label">Límites / Trade-offs Propuestos <span class="muted">(Opcional)</span></label>
+        <textarea id="prop-limits" rows="2" placeholder="Cuándo NO usarlo, compensaciones, supuestos de excepción o límites de validez..."></textarea>
+      </div>
+      <div id="prop-status" class="add-status" style="display:none; margin-top: 12px;"></div>
+      <div class="dlg-actions">
+        <button type="button" class="btn" id="prop-cancel">Cancelar</button>
+        <button type="submit" class="btn btn-primary" id="prop-submit">⚖️ Someter a Arbitraje</button>
       </div>
     </form>
   </dialog>
@@ -284,7 +408,7 @@
   <dialog id="dlg-pin">
     <form id="form-pin">
       <h2>🔒 PIN de Acceso</h2>
-      <p class="muted">Ingresa tu PIN de seguridad (WEB_ACCESS_PIN) para acceder a tu glosario personal. Se guardará de forma segura en este dispositivo.</p>
+      <p class="muted">Ingresa tu PIN de seguridad para autenticar tu sesión. Se almacenará localmente en este dispositivo.</p>
       <input type="password" id="pin-input" placeholder="Tu PIN secreto" required autocomplete="current-password">
       <div id="pin-error" class="add-status error" style="display:none;"></div>
       <div class="dlg-actions">
@@ -295,6 +419,6 @@
   </dialog>
 
   <div class="toast" id="toast" hidden></div>
-  <script src="/app.js?v=2.7"></script>
+  <script src="/app.js?v=3.1"></script>
 </body>
 </html>

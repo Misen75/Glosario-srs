@@ -17,7 +17,8 @@ import unittest
 from fastapi.testclient import TestClient
 
 from src.domain.models import (
-    Category, NewTermDraft, Rating, ReviewLog, SRSState, Term, ZoomLevel,
+    DEFAULT_LIMITS_LABEL, DEFAULT_ZOOM_LABELS, Category, MacroArea, NewTermDraft,
+    Rating, ReviewLog, SRSState, Term, UserTermCustomization, ZoomLevel,
 )
 from src.domain import srs_scheduler
 from src.application.use_cases import GlossaryService
@@ -69,6 +70,7 @@ class InMemoryRepository:
         self.terms: dict[int, Term] = {}
         self.srs_states: dict[int, SRSState] = {}
         self.review_logs: list[ReviewLog] = []
+        self.customizations: dict[tuple[int, int], UserTermCustomization] = {}
         self._next_cat_id = 1
         self._next_term_id = 1
 
@@ -86,6 +88,27 @@ class InMemoryRepository:
 
     def list_categories(self) -> list[Category]:
         return list(self.categories.values())
+
+
+    def upsert_macro_area(self, name, description="", zoom_labels=None, limits_label=None):
+        if not hasattr(self, "_macro_areas"):
+            self._macro_areas = {}
+        labels = tuple(zoom_labels) if zoom_labels and len(zoom_labels) == 4 else DEFAULT_ZOOM_LABELS
+        prev = self._macro_areas.get(name)
+        lim = limits_label or (prev.limits_label if prev else DEFAULT_LIMITS_LABEL)
+        ma = MacroArea(
+            id=len(self._macro_areas) + 1 if not prev else prev.id,
+            name=name,
+            description=description or (prev.description if prev else ""),
+            zoom_labels=labels,
+            limits_label=lim,
+        )
+        self._macro_areas[name] = ma
+        return ma
+
+    def list_macro_areas(self):
+        return dict(getattr(self, "_macro_areas", {}))
+
 
     def get_category(self, cid: int) -> Category | None:
         return self.categories.get(cid)
@@ -448,6 +471,170 @@ class InMemoryRepository:
             ],
             "user_metrics": list(self.users.values()),
         }
+
+    def get_user_customization(self, user_id: int, term_id: int) -> UserTermCustomization | None:
+        return self.customizations.get((int(user_id), int(term_id)))
+
+    def list_user_customizations(self, user_id: int) -> dict[int, UserTermCustomization]:
+        return {tid: c for (uid, tid), c in self.customizations.items() if uid == int(user_id)}
+
+    def save_user_customization(
+        self,
+        user_id: int,
+        term_id: int,
+        custom_definition: str | None = None,
+        custom_analogy: str | None = None,
+        custom_limits: str | None = None,
+        personal_notes: str | None = None,
+    ) -> UserTermCustomization:
+        prev = self.get_user_customization(user_id, term_id)
+        cust = UserTermCustomization(
+            user_id=int(user_id),
+            term_id=int(term_id),
+            custom_definition=custom_definition if custom_definition is not None else (prev.custom_definition if prev else None),
+            custom_analogy=custom_analogy if custom_analogy is not None else (prev.custom_analogy if prev else None),
+            custom_limits=custom_limits if custom_limits is not None else (prev.custom_limits if prev else None),
+            personal_notes=personal_notes if personal_notes is not None else (prev.personal_notes if prev else None),
+            status=prev.status if prev else "private",
+            proposal_justification=prev.proposal_justification if prev else None,
+            proposal_source=prev.proposal_source if prev else None,
+            arbitration_score=prev.arbitration_score if prev else None,
+            arbitration_verdict=prev.arbitration_verdict if prev else None,
+            updated_at=datetime.now(),
+        )
+        self.customizations[(int(user_id), int(term_id))] = cust
+        return cust
+
+    def delete_user_customization(self, user_id: int, term_id: int) -> bool:
+        return self.customizations.pop((int(user_id), int(term_id)), None) is not None
+
+    def submit_canonical_proposal(
+        self,
+        user_id: int,
+        term_id: int,
+        proposal_justification: str,
+        proposal_source: str,
+        custom_definition: str | None = None,
+        custom_analogy: str | None = None,
+        custom_limits: str | None = None,
+    ) -> UserTermCustomization:
+        prev = self.get_user_customization(user_id, term_id)
+        cust = UserTermCustomization(
+            user_id=int(user_id),
+            term_id=int(term_id),
+            custom_definition=custom_definition or (prev.custom_definition if prev else None),
+            custom_analogy=custom_analogy or (prev.custom_analogy if prev else None),
+            custom_limits=custom_limits or (prev.custom_limits if prev else None),
+            personal_notes=prev.personal_notes if prev else None,
+            status="proposed_to_canonical",
+            proposal_justification=proposal_justification,
+            proposal_source=proposal_source,
+            updated_at=datetime.now(),
+        )
+        self.customizations[(int(user_id), int(term_id))] = cust
+        return cust
+
+    def save_proposal_arbitration(self, user_id: int, term_id: int, score: float, verdict: str) -> None:
+        prev = self.get_user_customization(user_id, term_id)
+        if prev:
+            self.customizations[(int(user_id), int(term_id))] = UserTermCustomization(
+                user_id=prev.user_id,
+                term_id=prev.term_id,
+                custom_definition=prev.custom_definition,
+                custom_analogy=prev.custom_analogy,
+                custom_limits=prev.custom_limits,
+                personal_notes=prev.personal_notes,
+                status=prev.status,
+                proposal_justification=prev.proposal_justification,
+                proposal_source=prev.proposal_source,
+                arbitration_score=score,
+                arbitration_verdict=verdict,
+                updated_at=datetime.now(),
+            )
+
+    def list_pending_proposals(self) -> list[dict]:
+        out = []
+        for (uid, tid), c in self.customizations.items():
+            if c.status in ("proposed_to_canonical", "rejected_by_arbitration"):
+                t = self.terms.get(tid)
+                cat = self.categories.get(t.category_id) if t else None
+                out.append({
+                    "user_id": uid,
+                    "term_id": tid,
+                    "user_name": "Estudiante Test",
+                    "user_role": "user",
+                    "term_name": t.term if t else "",
+                    "macro_area": cat.macro_area if cat else "",
+                    "category_name": cat.name if cat else "",
+                    "canonical_definition": t.technical_definition if t else "",
+                    "canonical_analogy": t.daily_analogy if t else "",
+                    "canonical_limits": t.tradeoff_when_not_to_use if t else None,
+                    "canonical_source": t.canonical_source if t else "",
+                    "proposed_definition": c.custom_definition,
+                    "proposed_analogy": c.custom_analogy,
+                    "proposed_limits": c.custom_limits,
+                    "proposal_justification": c.proposal_justification,
+                    "proposal_source": c.proposal_source,
+                    "arbitration_score": c.arbitration_score,
+                    "arbitration_verdict": c.arbitration_verdict,
+                    "status": c.status,
+                    "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+                })
+        return out
+
+    def resolve_proposal(self, user_id: int, term_id: int, action: str, admin_notes: str | None = None) -> bool:
+        prev = self.get_user_customization(user_id, term_id)
+        if not prev:
+            return False
+        if action.lower() == "merge":
+            t = self.terms.get(term_id)
+            if t:
+                self.terms[term_id] = Term(
+                    id=t.id,
+                    category_id=t.category_id,
+                    term=t.term,
+                    technical_definition=prev.custom_definition or t.technical_definition,
+                    daily_analogy=prev.custom_analogy or t.daily_analogy,
+                    tradeoff_when_not_to_use=prev.custom_limits if prev.custom_limits is not None else t.tradeoff_when_not_to_use,
+                    created_at=t.created_at,
+                    other_scopes=t.other_scopes,
+                    canonical_source=prev.proposal_source or t.canonical_source,
+                    parent_term=t.parent_term,
+                    related_terms=t.related_terms,
+                )
+            self.customizations[(int(user_id), int(term_id))] = UserTermCustomization(
+                user_id=prev.user_id,
+                term_id=prev.term_id,
+                custom_definition=prev.custom_definition,
+                custom_analogy=prev.custom_analogy,
+                custom_limits=prev.custom_limits,
+                personal_notes=prev.personal_notes,
+                status="merged_to_canonical",
+                proposal_justification=prev.proposal_justification,
+                proposal_source=prev.proposal_source,
+                arbitration_score=prev.arbitration_score,
+                arbitration_verdict=admin_notes or prev.arbitration_verdict,
+                updated_at=datetime.now(),
+            )
+            return True
+        elif action.lower() == "reject":
+            self.customizations[(int(user_id), int(term_id))] = UserTermCustomization(
+                user_id=prev.user_id,
+                term_id=prev.term_id,
+                custom_definition=prev.custom_definition,
+                custom_analogy=prev.custom_analogy,
+                custom_limits=prev.custom_limits,
+                personal_notes=prev.personal_notes,
+                status="rejected_by_arbitration",
+                proposal_justification=prev.proposal_justification,
+                proposal_source=prev.proposal_source,
+                arbitration_score=prev.arbitration_score,
+                arbitration_verdict=admin_notes or prev.arbitration_verdict,
+                updated_at=datetime.now(),
+            )
+            return True
+        return False
+
 
 
 class TestCloudEndpoints(unittest.TestCase):

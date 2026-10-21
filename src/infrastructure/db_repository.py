@@ -20,7 +20,8 @@ from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
 
 from src.domain.models import (
-    Category, NewTermDraft, Rating, ReviewLog, SRSState, Term, ZoomLevel,
+    DEFAULT_LIMITS_LABEL, DEFAULT_ZOOM_LABELS, Category, MacroArea, NewTermDraft, Rating, ReviewLog,
+    SRSState, Term, UserTermCustomization, ZoomLevel,
 )
 
 
@@ -53,6 +54,47 @@ CREATE TABLE IF NOT EXISTS terms (
 );
 
 ALTER TABLE terms ADD COLUMN IF NOT EXISTS other_scopes TEXT[] NOT NULL DEFAULT '{}';
+
+-- Trazabilidad epistemológica (Fuente Cero) y topología ontológica del término
+ALTER TABLE terms ADD COLUMN IF NOT EXISTS canonical_source TEXT NOT NULL DEFAULT '';
+ALTER TABLE terms ADD COLUMN IF NOT EXISTS parent_term VARCHAR(200);
+ALTER TABLE terms ADD COLUMN IF NOT EXISTS related_terms TEXT[] NOT NULL DEFAULT '{}';
+
+-- Entidad normalizada de disciplinas con descriptores de granularidad ontológica propios
+CREATE TABLE IF NOT EXISTS macro_areas (
+    id           SERIAL PRIMARY KEY,
+    name         VARCHAR(150) NOT NULL UNIQUE,
+    description  TEXT NOT NULL DEFAULT '',
+    zoom_1_label VARCHAR(120) NOT NULL DEFAULT 'Micro · Unidad elemental',
+    zoom_2_label VARCHAR(120) NOT NULL DEFAULT 'Medio · Componente',
+    zoom_3_label VARCHAR(120) NOT NULL DEFAULT 'Macro · Estructura',
+    zoom_4_label VARCHAR(120) NOT NULL DEFAULT 'Fundamentos · Doctrina e infraestructura',
+    limits_label VARCHAR(150) NOT NULL DEFAULT 'Compensaciones y Anti-patrones (Trade-offs)',
+    updated_at   TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE macro_areas ADD COLUMN IF NOT EXISTS limits_label VARCHAR(150) NOT NULL DEFAULT 'Compensaciones y Anti-patrones (Trade-offs)';
+
+INSERT INTO macro_areas (name)
+SELECT DISTINCT macro_area FROM categories
+ON CONFLICT (name) DO NOTHING;
+
+-- Semilla canónica de descriptores de granularidad ontológica y límites por disciplina
+INSERT INTO macro_areas (name, description, zoom_1_label, zoom_2_label, zoom_3_label, zoom_4_label, limits_label)
+VALUES
+    ('Diseño y Arquitectura de Software', 'Principios de construcción, estructura modular, topologías y estilos arquitectónicos de sistemas de software.', 'Micro · Código, Clases y Funciones', 'Medio · Módulos y Componentes', 'Macro · Arquitectura y Topología', 'Fundamentos · Paradigmas y Atributos de Calidad', 'Compensaciones y Anti-patrones (Trade-offs)'),
+    ('Ingeniería de Software', 'Disciplina sistemática para el desarrollo, operación, aseguramiento de calidad y mantenimiento de software.', 'Micro · Prácticas de Codificación y Pruebas Unitarias', 'Medio · Artefactos, Pipelines y Servicios', 'Macro · Ciclo de Vida y Gobierno Técnico', 'Fundamentos · Estándares IEEE/ISO y Metodologías', 'Costos de Adopción y Escenarios Inadecuados'),
+    ('Ciencias de la Computación', 'Fundamentos matemáticos, algorítmicos, teóricos y sistémicos del cómputo y procesamiento de información.', 'Micro · Primitivas, Tipos y Operaciones Elementales', 'Medio · Estructuras de Datos y Algoritmos', 'Macro · Sistemas Operativos, Redes y Distribución', 'Fundamentos · Teoría de la Computación y Complejidad', 'Límites de Aplicabilidad y Condiciones de Fallo'),
+    ('Derecho', 'Ordenamiento normativo e institucional que regula la conducta humana en sociedad y la estructura del Estado.', 'Micro · Norma Jurídica, Artículo y Figura Legal', 'Medio · Institución Jurídica y Procedimiento', 'Macro · Rama del Derecho y Código Normativo', 'Fundamentos · Doctrina, Jurisprudencia y Teoría Constitucional', 'Supuestos de Excepción e Inaplicabilidad'),
+    ('Economía', 'Ciencia social que estudia la asignación de recursos escasos, incentivos, mercados y agregados macroeconómicos.', 'Micro · Agente, Precio, Utilidad y Transacción', 'Medio · Mercados, Firmas e Instrumentos Financieros', 'Macro · Política Fiscal/Monetaria y Agregados Nacionales', 'Fundamentos · Teoría Económica, Escuelas y Modelos Axiomáticos', 'Restricciones Axiomáticas y Supuestos de Invalidez'),
+    ('Ciencias Sociales', 'Estudio sistemático de las estructuras sociales, instituciones, cultura, poder e interacciones humanas.', 'Micro · Acción Social, Sujeto y Práctica', 'Medio · Grupos, Instituciones y Organizaciones', 'Macro · Estructura Social, Estado y Sistemas Culturales', 'Fundamentos · Epistemología y Teoría Social Clásica/Contemporánea', 'Críticas, Sesgos y Límites del Paradigma')
+ON CONFLICT (name) DO UPDATE SET
+    description  = CASE WHEN macro_areas.description = '' THEN EXCLUDED.description ELSE macro_areas.description END,
+    zoom_1_label = CASE WHEN macro_areas.zoom_1_label = 'Micro · Unidad elemental' THEN EXCLUDED.zoom_1_label ELSE macro_areas.zoom_1_label END,
+    zoom_2_label = CASE WHEN macro_areas.zoom_2_label = 'Medio · Componente' THEN EXCLUDED.zoom_2_label ELSE macro_areas.zoom_2_label END,
+    zoom_3_label = CASE WHEN macro_areas.zoom_3_label = 'Macro · Estructura' THEN EXCLUDED.zoom_3_label ELSE macro_areas.zoom_3_label END,
+    zoom_4_label = CASE WHEN macro_areas.zoom_4_label = 'Fundamentos · Doctrina e infraestructura' THEN EXCLUDED.zoom_4_label ELSE macro_areas.zoom_4_label END,
+    limits_label = CASE WHEN macro_areas.limits_label = 'Compensaciones y Anti-patrones (Trade-offs)' THEN EXCLUDED.limits_label ELSE macro_areas.limits_label END;
 
 CREATE TABLE IF NOT EXISTS srs_state (
     term_id          INTEGER PRIMARY KEY REFERENCES terms(id),
@@ -89,6 +131,7 @@ CREATE TABLE IF NOT EXISTS user_settings (
 
 ALTER TABLE user_settings DROP CONSTRAINT IF EXISTS user_settings_id_check;
 ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS active_category_ids INTEGER[] NOT NULL DEFAULT '{}';
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS excluded_term_ids INTEGER[] NOT NULL DEFAULT '{}';
 
 INSERT INTO user_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 
@@ -132,6 +175,28 @@ ON CONFLICT (user_id, term_id) DO NOTHING;
 ALTER TABLE review_log ADD COLUMN IF NOT EXISTS user_id INTEGER NOT NULL DEFAULT 1;
 
 -- =========================================================================
+-- Capa de Personalización del Estudiante (Copy-on-Write) y Pipeline de Arbitraje Canónico
+-- =========================================================================
+CREATE TABLE IF NOT EXISTS user_term_customizations (
+    user_id                INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    term_id                INTEGER NOT NULL REFERENCES terms(id) ON DELETE CASCADE,
+    custom_definition      TEXT,
+    custom_analogy         TEXT,
+    custom_limits          TEXT,
+    personal_notes         TEXT,
+    status                 VARCHAR(50) NOT NULL DEFAULT 'private',
+    proposal_justification TEXT,
+    proposal_source        TEXT,
+    arbitration_score      REAL,
+    arbitration_verdict    TEXT,
+    updated_at             TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, term_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_customizations_user ON user_term_customizations(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_customizations_pending ON user_term_customizations(status) WHERE status = 'proposed_to_canonical';
+
+-- =========================================================================
 -- Inmutabilidad reforzada con funciones y triggers nativos de PostgreSQL
 -- (Permite mutación administrativa explícita dentro de una transacción con
 --  SET LOCAL glosario.allow_admin_mutation = '1')
@@ -170,7 +235,10 @@ BEGIN
        OR NEW.technical_definition <> OLD.technical_definition
        OR NEW.daily_analogy <> OLD.daily_analogy
        OR (OLD.tradeoff_when_not_to_use IS NOT NULL AND NEW.tradeoff_when_not_to_use IS DISTINCT FROM OLD.tradeoff_when_not_to_use)
-       OR (OLD.other_scopes IS NOT NULL AND cardinality(OLD.other_scopes) > 0 AND NEW.other_scopes IS DISTINCT FROM OLD.other_scopes) THEN
+       OR (OLD.other_scopes IS NOT NULL AND cardinality(OLD.other_scopes) > 0 AND NEW.other_scopes IS DISTINCT FROM OLD.other_scopes)
+       OR (COALESCE(OLD.canonical_source, '') <> '' AND NEW.canonical_source IS DISTINCT FROM OLD.canonical_source)
+       OR (OLD.parent_term IS NOT NULL AND OLD.parent_term <> '' AND NEW.parent_term IS DISTINCT FROM OLD.parent_term)
+       OR (OLD.related_terms IS NOT NULL AND cardinality(OLD.related_terms) > 0 AND NEW.related_terms IS DISTINCT FROM OLD.related_terms) THEN
         RAISE EXCEPTION 'terms es inmutable: no se permite sobrescribir datos existentes';
     END IF;
     RETURN NEW;
@@ -241,6 +309,21 @@ class PostgresGlossaryRepository:
 
     # ------------------------------------------------------------- Mappers
     @staticmethod
+    def _to_macro_area(r: dict) -> MacroArea:
+        z1 = (r.get("zoom_1_label") or DEFAULT_ZOOM_LABELS[0]).strip()
+        z2 = (r.get("zoom_2_label") or DEFAULT_ZOOM_LABELS[1]).strip()
+        z3 = (r.get("zoom_3_label") or DEFAULT_ZOOM_LABELS[2]).strip()
+        z4 = (r.get("zoom_4_label") or DEFAULT_ZOOM_LABELS[3]).strip()
+        lim = (r.get("limits_label") or DEFAULT_LIMITS_LABEL).strip()
+        return MacroArea(
+            id=int(r["id"]),
+            name=str(r["name"]),
+            description=str(r.get("description") or ""),
+            zoom_labels=(z1, z2, z3, z4),
+            limits_label=lim,
+        )
+
+    @staticmethod
     def _to_category(r: dict) -> Category:
         desc = r.get("simple_explanation") or r.get("description") or ""
         return Category(
@@ -257,6 +340,8 @@ class PostgresGlossaryRepository:
         if isinstance(c_at, str):
             c_at = datetime.fromisoformat(c_at)
         raw_scopes = r.get("other_scopes") or ()
+        raw_related = r.get("related_terms") or ()
+        parent_val = r.get("parent_term")
         return Term(
             id=r["id"],
             category_id=r["category_id"],
@@ -266,6 +351,29 @@ class PostgresGlossaryRepository:
             tradeoff_when_not_to_use=r["tradeoff_when_not_to_use"],
             created_at=c_at,
             other_scopes=tuple(raw_scopes),
+            canonical_source=str(r.get("canonical_source") or ""),
+            parent_term=str(parent_val).strip() if parent_val else None,
+            related_terms=tuple(str(x).strip() for x in raw_related if x and str(x).strip()),
+        )
+
+    @staticmethod
+    def _to_user_customization(r: dict) -> UserTermCustomization:
+        u_at = r.get("updated_at")
+        if isinstance(u_at, str):
+            u_at = datetime.fromisoformat(u_at)
+        return UserTermCustomization(
+            user_id=int(r["user_id"]),
+            term_id=int(r["term_id"]),
+            custom_definition=r.get("custom_definition"),
+            custom_analogy=r.get("custom_analogy"),
+            custom_limits=r.get("custom_limits"),
+            personal_notes=r.get("personal_notes"),
+            status=str(r.get("status") or "private"),
+            proposal_justification=r.get("proposal_justification"),
+            proposal_source=r.get("proposal_source"),
+            arbitration_score=float(r["arbitration_score"]) if r.get("arbitration_score") is not None else None,
+            arbitration_verdict=r.get("arbitration_verdict"),
+            updated_at=u_at,
         )
 
     @staticmethod
@@ -284,6 +392,68 @@ class PostgresGlossaryRepository:
             next_review_date=nxt,
             last_reviewed_at=last_rev,
         )
+
+    # --------------------------------------------------------- Macro-Areas
+    def list_macro_areas(self) -> dict[str, MacroArea]:
+        """Devuelve un diccionario indexado por nombre de macro-área con sus descriptores de granularidad ontológica y límites propios."""
+        try:
+            with self._connect() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute("SELECT * FROM macro_areas ORDER BY name ASC")
+                    rows = cur.fetchall()
+            return {r["name"]: self._to_macro_area(r) for r in rows}
+        except Exception:
+            return {}
+
+    def upsert_macro_area(
+        self,
+        name: str,
+        description: str = "",
+        zoom_labels: Optional[tuple[str, str, str, str] | list[str]] = None,
+        limits_label: Optional[str] = None,
+    ) -> Optional[MacroArea]:
+        clean_name = (name or "").strip()
+        if not clean_name:
+            return None
+        clean_desc = (description or "").strip()
+        labels = list(zoom_labels) if zoom_labels and len(zoom_labels) == 4 else list(DEFAULT_ZOOM_LABELS)
+        z1 = (labels[0] or DEFAULT_ZOOM_LABELS[0]).strip()[:120]
+        z2 = (labels[1] or DEFAULT_ZOOM_LABELS[1]).strip()[:120]
+        z3 = (labels[2] or DEFAULT_ZOOM_LABELS[2]).strip()[:120]
+        z4 = (labels[3] or DEFAULT_ZOOM_LABELS[3]).strip()[:120]
+        clean_limits = (limits_label or DEFAULT_LIMITS_LABEL).strip()[:150]
+        has_custom_labels = bool(zoom_labels and len(zoom_labels) == 4 and tuple(labels) != DEFAULT_ZOOM_LABELS)
+        try:
+            with self._connect() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    if has_custom_labels or (limits_label and limits_label != DEFAULT_LIMITS_LABEL):
+                        cur.execute(
+                            """INSERT INTO macro_areas (name, description, zoom_1_label, zoom_2_label, zoom_3_label, zoom_4_label, limits_label, updated_at)
+                               VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                               ON CONFLICT (name) DO UPDATE SET
+                                   description  = CASE WHEN EXCLUDED.description <> '' THEN EXCLUDED.description ELSE macro_areas.description END,
+                                   zoom_1_label = CASE WHEN macro_areas.zoom_1_label = 'Micro · Unidad elemental' THEN EXCLUDED.zoom_1_label ELSE macro_areas.zoom_1_label END,
+                                   zoom_2_label = CASE WHEN macro_areas.zoom_2_label = 'Medio · Componente' THEN EXCLUDED.zoom_2_label ELSE macro_areas.zoom_2_label END,
+                                   zoom_3_label = CASE WHEN macro_areas.zoom_3_label = 'Macro · Estructura' THEN EXCLUDED.zoom_3_label ELSE macro_areas.zoom_3_label END,
+                                   zoom_4_label = CASE WHEN macro_areas.zoom_4_label = 'Fundamentos · Doctrina e infraestructura' THEN EXCLUDED.zoom_4_label ELSE macro_areas.zoom_4_label END,
+                                   limits_label = CASE WHEN macro_areas.limits_label = 'Compensaciones y Anti-patrones (Trade-offs)' THEN EXCLUDED.limits_label ELSE macro_areas.limits_label END,
+                                   updated_at   = NOW()
+                               RETURNING *""",
+                            (clean_name, clean_desc, z1, z2, z3, z4, clean_limits),
+                        )
+                    else:
+                        cur.execute(
+                            """INSERT INTO macro_areas (name, description, updated_at)
+                               VALUES (%s, %s, NOW())
+                               ON CONFLICT (name) DO UPDATE SET
+                                   description = CASE WHEN macro_areas.description = '' AND EXCLUDED.description <> '' THEN EXCLUDED.description ELSE macro_areas.description END
+                               RETURNING *""",
+                            (clean_name, clean_desc),
+                        )
+                    r = cur.fetchone()
+                    return self._to_macro_area(r) if r else None
+        except Exception:
+            return None
 
     # ---------------------------------------------------------- Categories
     def list_categories(self) -> list[Category]:
@@ -320,6 +490,13 @@ class PostgresGlossaryRepository:
                     (macro_area.strip(), name.strip(), description.strip(), int(zoom_level)),
                 )
                 r = cur.fetchone()
+                try:
+                    cur.execute(
+                        "INSERT INTO macro_areas (name) VALUES (%s) ON CONFLICT (name) DO NOTHING",
+                        (macro_area.strip(),),
+                    )
+                except Exception:
+                    pass
         return self._to_category(r)
 
     def count_terms_by_category(self) -> dict[int, int]:
@@ -386,15 +563,39 @@ class PostgresGlossaryRepository:
         today_date = today or date.today()
         tradeoff = draft.tradeoff_when_not_to_use.strip() if draft.tradeoff_when_not_to_use else None
         scopes_list = [s.strip() for s in (draft.other_scopes or ()) if s and s.strip()]
+        canonical_src = (draft.canonical_source or "").strip()
+        parent_val = draft.parent_term.strip() if draft.parent_term and draft.parent_term.strip() else None
+        related_list = [r.strip() for r in (draft.related_terms or ()) if r and r.strip()]
+
+        if draft.macro_area and (draft.macro_area_zoom_labels or draft.macro_area_description or getattr(draft, "macro_area_limits_label", None)):
+            self.upsert_macro_area(
+                name=draft.macro_area,
+                description=draft.macro_area_description,
+                zoom_labels=draft.macro_area_zoom_labels,
+                limits_label=getattr(draft, "macro_area_limits_label", DEFAULT_LIMITS_LABEL),
+            )
 
         with self._connect() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute(
-                    """INSERT INTO terms (category_id, term, technical_definition, daily_analogy, tradeoff_when_not_to_use, other_scopes)
-                       VALUES (%s, %s, %s, %s, %s, %s)
+                    """INSERT INTO terms (
+                           category_id, term, technical_definition, daily_analogy,
+                           tradeoff_when_not_to_use, other_scopes,
+                           canonical_source, parent_term, related_terms
+                       )
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                        RETURNING *""",
-                    (category_id, draft.term.strip(), draft.technical_definition.strip(),
-                     draft.daily_analogy.strip(), tradeoff, scopes_list),
+                    (
+                        category_id,
+                        draft.term.strip(),
+                        draft.technical_definition.strip(),
+                        draft.daily_analogy.strip(),
+                        tradeoff,
+                        scopes_list,
+                        canonical_src,
+                        parent_val,
+                        related_list,
+                    ),
                 )
                 t_row = cur.fetchone()
                 term_id = t_row["id"]
@@ -467,6 +668,18 @@ class PostgresGlossaryRepository:
         """Regeneración administrativa de un término con IA (con permiso transaccional explícito)."""
         tradeoff = draft.tradeoff_when_not_to_use.strip() if draft.tradeoff_when_not_to_use else None
         scopes_list = [s.strip() for s in (draft.other_scopes or ()) if s and s.strip()]
+        canonical_src = (draft.canonical_source or "").strip()
+        parent_val = draft.parent_term.strip() if draft.parent_term and draft.parent_term.strip() else None
+        related_list = [r.strip() for r in (draft.related_terms or ()) if r and r.strip()]
+
+        if draft.macro_area and (draft.macro_area_zoom_labels or draft.macro_area_description or getattr(draft, "macro_area_limits_label", None)):
+            self.upsert_macro_area(
+                name=draft.macro_area,
+                description=draft.macro_area_description,
+                zoom_labels=draft.macro_area_zoom_labels,
+                limits_label=getattr(draft, "macro_area_limits_label", DEFAULT_LIMITS_LABEL),
+            )
+
         with self._connect() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("SET LOCAL glosario.allow_admin_mutation = '1'")
@@ -477,7 +690,10 @@ class PostgresGlossaryRepository:
                            technical_definition = %s,
                            daily_analogy = %s,
                            tradeoff_when_not_to_use = %s,
-                           other_scopes = %s
+                           other_scopes = %s,
+                           canonical_source = %s,
+                           parent_term = %s,
+                           related_terms = %s
                        WHERE id = %s
                        RETURNING *""",
                     (
@@ -487,6 +703,9 @@ class PostgresGlossaryRepository:
                         draft.daily_analogy.strip(),
                         tradeoff,
                         scopes_list,
+                        canonical_src,
+                        parent_val,
+                        related_list,
                         term_id,
                     ),
                 )
@@ -594,31 +813,36 @@ class PostgresGlossaryRepository:
         today: date,
         user_id: int = 1,
         active_category_ids: Optional[list[int]] = None,
+        excluded_term_ids: Optional[list[int]] = None,
     ) -> Optional[int]:
         """Encuentra la categoría de foco activo:
-        1. Respeta `active_category_ids` si el usuario filtró en Configuración qué categorías desea estudiar.
+        1. Respeta `active_category_ids` y `excluded_term_ids` si el usuario personalizó su mazo de estudio.
         2. Si hay una categoría con repasos HOY que aún tiene fichas pendientes hoy, se mantiene fija
            (protección de sesión activa para no interrumpir cuando se captura un término en otra categoría).
         3. De lo contrario, selecciona la primera categoría pendiente por orden cronológico de currículo (`c.id ASC, c.zoom_level ASC`)
            para que una categoría nueva en otra área (ej. 'Derecho') jamás secuestre el foco antes de terminar las actuales.
         """
         filter_ids = [int(cid) for cid in (active_category_ids or []) if cid]
+        excl_ids = [int(tid) for tid in (excluded_term_ids or []) if tid]
         srs_table = "user_srs_state" if int(user_id) != 1 else "srs_state"
         user_clause = "AND s.user_id = %s" if int(user_id) != 1 else ""
         cat_clause = "AND c.id = ANY(%s)" if filter_ids else ""
+        excl_clause = "AND NOT (t.id = ANY(%s))" if excl_ids else ""
 
         params: list = [today]
         if int(user_id) != 1:
             params.append(int(user_id))
         if filter_ids:
             params.append(filter_ids)
+        if excl_ids:
+            params.append(excl_ids)
         params.extend([today, today])
 
         query = f"""SELECT c.id
                     FROM categories c
                     JOIN terms t ON t.category_id = c.id
                     JOIN {srs_table} s ON s.term_id = t.id
-                    WHERE s.next_review_date <= %s {user_clause} {cat_clause}
+                    WHERE s.next_review_date <= %s {user_clause} {cat_clause} {excl_clause}
                     GROUP BY c.id, c.macro_area, c.zoom_level
                     ORDER BY CASE WHEN MAX(CASE WHEN s.last_reviewed_at IS NOT NULL AND DATE(s.last_reviewed_at) = %s THEN 1 ELSE 0 END) = 1 THEN 0 ELSE 1 END ASC,
                              MAX(CASE WHEN s.last_reviewed_at IS NOT NULL AND DATE(s.last_reviewed_at) = %s THEN s.last_reviewed_at ELSE NULL END) DESC NULLS LAST,
@@ -640,13 +864,15 @@ class PostgresGlossaryRepository:
         category_id: Optional[int] = None,
         user_id: int = 1,
         active_category_ids: Optional[list[int]] = None,
+        excluded_term_ids: Optional[list[int]] = None,
         distinct_terms: bool = True,
     ) -> list[int]:
         filter_ids = [int(cid) for cid in (active_category_ids or []) if cid]
+        excl_ids = [int(tid) for tid in (excluded_term_ids or []) if tid]
         target_cat_id = category_id
         if focused and target_cat_id is None:
             target_cat_id = self.get_active_focus_category_id(
-                today, user_id=user_id, active_category_ids=filter_ids
+                today, user_id=user_id, active_category_ids=filter_ids, excluded_term_ids=excl_ids
             )
             if target_cat_id is None:
                 return []
@@ -665,6 +891,10 @@ class PostgresGlossaryRepository:
         elif filter_ids:
             where_parts.append("t.category_id = ANY(%s)")
             params.append(filter_ids)
+
+        if excl_ids:
+            where_parts.append("NOT (t.id = ANY(%s))")
+            params.append(excl_ids)
 
         params.append(today)
         query = f"""SELECT s.term_id, t.term
@@ -705,8 +935,10 @@ class PostgresGlossaryRepository:
         category_id: Optional[int] = None,
         user_id: int = 1,
         active_category_ids: Optional[list[int]] = None,
+        excluded_term_ids: Optional[list[int]] = None,
     ) -> int:
         filter_ids = [int(cid) for cid in (active_category_ids or []) if cid]
+        excl_ids = [int(tid) for tid in (excluded_term_ids or []) if tid]
         srs_table = "user_srs_state" if int(user_id) != 1 else "srs_state"
         where_parts = ["s.next_review_date <= %s"]
         params: list = [today]
@@ -721,6 +953,10 @@ class PostgresGlossaryRepository:
         elif filter_ids:
             where_parts.append("t.category_id = ANY(%s)")
             params.append(filter_ids)
+
+        if excl_ids:
+            where_parts.append("NOT (t.id = ANY(%s))")
+            params.append(excl_ids)
 
         with self._connect() as conn:
             with conn.cursor() as cur:
@@ -777,6 +1013,7 @@ class PostgresGlossaryRepository:
             "theme": "light",
             "step_by_step_reveal": False,
             "active_category_ids": [],
+            "excluded_term_ids": [],
         }
         try:
             with self._connect() as conn:
@@ -786,6 +1023,7 @@ class PostgresGlossaryRepository:
                     if not r:
                         return defaults
                     raw_active = r.get("active_category_ids") or []
+                    raw_excluded = r.get("excluded_term_ids") or []
                     return {
                         "session_card_limit": int(r["session_card_limit"]),
                         "maturity_threshold_days": int(r["maturity_threshold_days"]),
@@ -794,6 +1032,7 @@ class PostgresGlossaryRepository:
                         "theme": str(r["theme"] or "light"),
                         "step_by_step_reveal": bool(r["step_by_step_reveal"]),
                         "active_category_ids": [int(x) for x in raw_active if x is not None],
+                        "excluded_term_ids": [int(x) for x in raw_excluded if x is not None],
                     }
         except Exception:
             return defaults
@@ -802,14 +1041,15 @@ class PostgresGlossaryRepository:
         current = self.get_settings(user_id=user_id)
         merged = {**current, **{k: v for k, v in kwargs.items() if v is not None and k in current}}
         active_ids = [int(x) for x in (merged.get("active_category_ids") or []) if x is not None]
+        excluded_ids = [int(x) for x in (merged.get("excluded_term_ids") or []) if x is not None]
         with self._connect() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute(
                     """INSERT INTO user_settings (
                            id, session_card_limit, maturity_threshold_days,
                            initial_ease_factor, focused_mode, theme, step_by_step_reveal,
-                           active_category_ids, updated_at
-                       ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                           active_category_ids, excluded_term_ids, updated_at
+                       ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                        ON CONFLICT (id) DO UPDATE SET
                            session_card_limit = EXCLUDED.session_card_limit,
                            maturity_threshold_days = EXCLUDED.maturity_threshold_days,
@@ -818,6 +1058,7 @@ class PostgresGlossaryRepository:
                            theme = EXCLUDED.theme,
                            step_by_step_reveal = EXCLUDED.step_by_step_reveal,
                            active_category_ids = EXCLUDED.active_category_ids,
+                           excluded_term_ids = EXCLUDED.excluded_term_ids,
                            updated_at = NOW()
                        RETURNING *""",
                     (
@@ -829,6 +1070,7 @@ class PostgresGlossaryRepository:
                         str(merged["theme"]),
                         bool(merged["step_by_step_reveal"]),
                         active_ids,
+                        excluded_ids,
                     ),
                 )
         return self.get_settings(user_id=user_id)
@@ -1059,3 +1301,234 @@ class PostgresGlossaryRepository:
             "area_breakdown": area_breakdown,
             "user_metrics": user_metrics,
         }
+
+    # --------------------------------------------------- Personalización CoW y Arbitraje Canónico
+    def get_user_customization(self, user_id: int, term_id: int) -> Optional[UserTermCustomization]:
+        """Obtiene la sobreescritura privada (Copy-on-Write) de un estudiante para un término."""
+        try:
+            with self._connect() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(
+                        "SELECT * FROM user_term_customizations WHERE user_id = %s AND term_id = %s",
+                        (int(user_id), int(term_id)),
+                    )
+                    r = cur.fetchone()
+                    return self._to_user_customization(r) if r else None
+        except Exception:
+            return None
+
+    def list_user_customizations(self, user_id: int) -> dict[int, UserTermCustomization]:
+        """Devuelve un mapa term_id -> UserTermCustomization de todas las notas/analogías privadas del usuario."""
+        try:
+            with self._connect() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(
+                        "SELECT * FROM user_term_customizations WHERE user_id = %s",
+                        (int(user_id),),
+                    )
+                    rows = cur.fetchall()
+                    return {int(r["term_id"]): self._to_user_customization(r) for r in rows}
+        except Exception:
+            return {}
+
+    def save_user_customization(
+        self,
+        user_id: int,
+        term_id: int,
+        custom_definition: Optional[str] = None,
+        custom_analogy: Optional[str] = None,
+        custom_limits: Optional[str] = None,
+        personal_notes: Optional[str] = None,
+    ) -> UserTermCustomization:
+        """Guarda o actualiza las notas y sobreescrituras privadas del estudiante con latencia sub-milisegundo."""
+        clean_def = custom_definition.strip() if custom_definition is not None else None
+        clean_ana = custom_analogy.strip() if custom_analogy is not None else None
+        clean_lim = custom_limits.strip() if custom_limits is not None else None
+        clean_not = personal_notes.strip() if personal_notes is not None else None
+
+        with self._connect() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """INSERT INTO user_term_customizations (
+                           user_id, term_id, custom_definition, custom_analogy, custom_limits, personal_notes, updated_at
+                       )
+                       VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                       ON CONFLICT (user_id, term_id) DO UPDATE SET
+                           custom_definition = COALESCE(EXCLUDED.custom_definition, user_term_customizations.custom_definition),
+                           custom_analogy    = COALESCE(EXCLUDED.custom_analogy, user_term_customizations.custom_analogy),
+                           custom_limits     = COALESCE(EXCLUDED.custom_limits, user_term_customizations.custom_limits),
+                           personal_notes    = COALESCE(EXCLUDED.personal_notes, user_term_customizations.personal_notes),
+                           updated_at        = NOW()
+                       RETURNING *""",
+                    (int(user_id), int(term_id), clean_def, clean_ana, clean_lim, clean_not),
+                )
+                r = cur.fetchone()
+                return self._to_user_customization(r)
+
+    def delete_user_customization(self, user_id: int, term_id: int) -> bool:
+        """Restaura la ficha al contenido canónico eliminando cualquier personalización local del usuario."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM user_term_customizations WHERE user_id = %s AND term_id = %s",
+                    (int(user_id), int(term_id)),
+                )
+                return cur.rowcount >= 1
+
+    def submit_canonical_proposal(
+        self,
+        user_id: int,
+        term_id: int,
+        proposal_justification: str,
+        proposal_source: str,
+        custom_definition: Optional[str] = None,
+        custom_analogy: Optional[str] = None,
+        custom_limits: Optional[str] = None,
+    ) -> UserTermCustomization:
+        """Eleva una propuesta de mejora epistémica a la cola de arbitraje canónico."""
+        clean_def = custom_definition.strip() if custom_definition else None
+        clean_ana = custom_analogy.strip() if custom_analogy else None
+        clean_lim = custom_limits.strip() if custom_limits else None
+        clean_src = (proposal_source or "").strip()
+        clean_jus = (proposal_justification or "").strip()
+
+        with self._connect() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """INSERT INTO user_term_customizations (
+                           user_id, term_id, custom_definition, custom_analogy, custom_limits,
+                           status, proposal_justification, proposal_source, updated_at
+                       )
+                       VALUES (%s, %s, %s, %s, %s, 'proposed_to_canonical', %s, %s, NOW())
+                       ON CONFLICT (user_id, term_id) DO UPDATE SET
+                           custom_definition      = COALESCE(EXCLUDED.custom_definition, user_term_customizations.custom_definition),
+                           custom_analogy         = COALESCE(EXCLUDED.custom_analogy, user_term_customizations.custom_analogy),
+                           custom_limits          = COALESCE(EXCLUDED.custom_limits, user_term_customizations.custom_limits),
+                           status                 = 'proposed_to_canonical',
+                           proposal_justification = EXCLUDED.proposal_justification,
+                           proposal_source        = EXCLUDED.proposal_source,
+                           arbitration_score      = NULL,
+                           arbitration_verdict    = NULL,
+                           updated_at             = NOW()
+                       RETURNING *""",
+                    (int(user_id), int(term_id), clean_def, clean_ana, clean_lim, clean_jus, clean_src),
+                )
+                r = cur.fetchone()
+                return self._to_user_customization(r)
+
+    def save_proposal_arbitration(
+        self,
+        user_id: int,
+        term_id: int,
+        score: float,
+        verdict: str,
+    ) -> None:
+        """Registra el puntaje y dictamen emitido por el linter epistémico / árbitro de IA."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE user_term_customizations
+                       SET arbitration_score = %s,
+                           arbitration_verdict = %s,
+                           updated_at = NOW()
+                       WHERE user_id = %s AND term_id = %s""",
+                    (float(score), str(verdict).strip(), int(user_id), int(term_id)),
+                )
+
+    def list_pending_proposals(self) -> list[dict]:
+        """Lista propuestas de estudiantes pendientes de resolución por la administración."""
+        with self._connect() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """SELECT c.user_id,
+                              c.term_id,
+                              u.display_name AS user_name,
+                              u.role AS user_role,
+                              t.term AS term_name,
+                              cat.macro_area,
+                              cat.name AS category_name,
+                              t.technical_definition AS canonical_definition,
+                              t.daily_analogy AS canonical_analogy,
+                              t.tradeoff_when_not_to_use AS canonical_limits,
+                              t.canonical_source,
+                              c.custom_definition AS proposed_definition,
+                              c.custom_analogy AS proposed_analogy,
+                              c.custom_limits AS proposed_limits,
+                              c.proposal_justification,
+                              c.proposal_source,
+                              c.arbitration_score,
+                              c.arbitration_verdict,
+                              c.status,
+                              c.updated_at
+                       FROM user_term_customizations c
+                       JOIN users u ON u.id = c.user_id
+                       JOIN terms t ON t.id = c.term_id
+                       JOIN categories cat ON cat.id = t.category_id
+                       WHERE c.status IN ('proposed_to_canonical', 'rejected_by_arbitration')
+                       ORDER BY c.updated_at DESC"""
+                )
+                rows = cur.fetchall()
+                out = []
+                for r in rows:
+                    item = dict(r)
+                    if isinstance(item.get("updated_at"), datetime):
+                        item["updated_at"] = item["updated_at"].isoformat()
+                    out.append(item)
+                return out
+
+    def resolve_proposal(
+        self,
+        user_id: int,
+        term_id: int,
+        action: str,
+        admin_notes: Optional[str] = None,
+    ) -> bool:
+        """Acepta e incorpora la propuesta al Catálogo Canónico Global (Merge) o la rechaza."""
+        with self._connect() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT * FROM user_term_customizations WHERE user_id = %s AND term_id = %s",
+                    (int(user_id), int(term_id)),
+                )
+                custom = cur.fetchone()
+                if not custom:
+                    return False
+
+                if action.lower() == "merge":
+                    cur.execute("SET LOCAL glosario.allow_admin_mutation = '1'")
+                    cur.execute(
+                        """UPDATE terms
+                           SET technical_definition     = COALESCE(NULLIF(%s, ''), technical_definition),
+                               daily_analogy            = COALESCE(NULLIF(%s, ''), daily_analogy),
+                               tradeoff_when_not_to_use = COALESCE(NULLIF(%s, ''), tradeoff_when_not_to_use),
+                               canonical_source         = CASE WHEN %s <> '' THEN %s ELSE canonical_source END
+                           WHERE id = %s""",
+                        (
+                            custom.get("custom_definition") or "",
+                            custom.get("custom_analogy") or "",
+                            custom.get("custom_limits") or "",
+                            (custom.get("proposal_source") or "").strip(),
+                            (custom.get("proposal_source") or "").strip(),
+                            int(term_id),
+                        ),
+                    )
+                    cur.execute(
+                        """UPDATE user_term_customizations
+                           SET status = 'merged_to_canonical',
+                               arbitration_verdict = COALESCE(%s, arbitration_verdict),
+                               updated_at = NOW()
+                           WHERE user_id = %s AND term_id = %s""",
+                        (admin_notes, int(user_id), int(term_id)),
+                    )
+                    return True
+                elif action.lower() == "reject":
+                    cur.execute(
+                        """UPDATE user_term_customizations
+                           SET status = 'rejected_by_arbitration',
+                               arbitration_verdict = COALESCE(%s, arbitration_verdict),
+                               updated_at = NOW()
+                           WHERE user_id = %s AND term_id = %s""",
+                        (admin_notes, int(user_id), int(term_id)),
+                    )
+                    return True
+                return False
