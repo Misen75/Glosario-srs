@@ -1,4 +1,4 @@
-// Glosario SRS - Lógica cliente SPA / PWA (Versión 3.0 Canónica y Adaptativa)
+// Glosario SRS - Lógica cliente SPA / PWA (Versión 4.0 Canónica, 3D SRS, Command Palette & Grafo SVG)
 (() => {
   "use strict";
 
@@ -9,6 +9,7 @@
     terms: [],
     dueCards: [],
     currentDueIndex: 0,
+    sessionHistory: [],
     isCardRevealed: false,
     revealStep: 0,
     stats: null,
@@ -17,7 +18,7 @@
       maturity_threshold_days: 21,
       initial_ease_factor: 2.5,
       focused_mode: true,
-      theme: localStorage.getItem("glosario_srs_theme") || "light",
+      theme: localStorage.getItem("glosario_srs_theme") || "dark",
       step_by_step_reveal: false,
       active_category_ids: [],
       excluded_term_ids: [],
@@ -30,6 +31,10 @@
     selectedTermId: null,
     selectedCatId: null,
     collapsedCats: new Set(),
+    // Command Palette state
+    cmdFilter: "all",
+    cmdActiveIndex: 0,
+    cmdMatchedItems: [],
   };
 
   // Zoom helpers por defecto (disciplina computacional)
@@ -47,6 +52,14 @@
     dueBadge: document.getElementById("due-badge"),
     tabAdmin: document.getElementById("tab-admin"),
     btnHeaderAdd: document.getElementById("btn-header-add"),
+
+    // Header 4.0 (Mastery Ring, Command Palette Trigger, Theme Toggle)
+    headerMasteryPill: document.getElementById("header-mastery-pill"),
+    headerRingFill: document.getElementById("header-ring-fill"),
+    headerMasteryVal: document.getElementById("header-mastery-val"),
+    btnCmdPalette: document.getElementById("btn-cmd-palette"),
+    btnThemeToggle: document.getElementById("btn-theme-toggle"),
+    themeToggleIco: document.getElementById("theme-toggle-ico"),
 
     // Explorador Taxonómico y Mazo (Master-Detail)
     explorerIntro: document.getElementById("explorer-intro"),
@@ -68,17 +81,27 @@
     btnAdd: document.getElementById("btn-add"),
     btnPrint: document.getElementById("btn-print"),
 
-    // Entrenamiento (Flashcards SRS)
+    // Entrenamiento (Flashcards SRS 3D + Session Timeline)
     dueNum: document.getElementById("due-num"),
     dueLabel: document.getElementById("due-label"),
     reviewedToday: document.getElementById("reviewed-today"),
     trainArea: document.getElementById("train-area"),
     trainEmpty: document.getElementById("train-empty"),
+    sessionProgressWrap: document.getElementById("session-progress-wrap"),
+    sessionProgressTitle: document.getElementById("session-progress-title"),
+    sessionProgressStats: document.getElementById("session-progress-stats"),
+    sessionProgressSegments: document.getElementById("session-progress-segments"),
     flashcard: document.getElementById("flashcard"),
     fcCategory: document.getElementById("fc-category"),
+    fcZoomBadge: document.getElementById("fc-zoom-badge"),
+    fcMaturityPill: document.getElementById("fc-maturity-pill"),
     fcHelp: document.getElementById("fc-help"),
     fcTerm: document.getElementById("fc-term"),
+    fcFrontOntoPreview: document.getElementById("fc-front-onto-preview"),
     fcHint: document.getElementById("fc-hint"),
+    fcBackCategory: document.getElementById("fc-back-category"),
+    fcBackTerm: document.getElementById("fc-back-term"),
+    fcFlipBack: document.getElementById("fc-flip-back"),
     fcAnswer: document.getElementById("fc-answer"),
     fcBlockDef: document.getElementById("fc-block-def"),
     fcBlockAnalog: document.getElementById("fc-block-analog"),
@@ -94,6 +117,13 @@
     pv1: document.getElementById("pv-1"),
     pv2: document.getElementById("pv-2"),
     pv3: document.getElementById("pv-3"),
+
+    // Command Palette (Ctrl + K)
+    dlgCmdPalette: document.getElementById("dlg-cmd-palette"),
+    cmdSearchInput: document.getElementById("cmd-search-input"),
+    cmdCloseBtn: document.getElementById("cmd-close-btn"),
+    cmdFilterBar: document.getElementById("cmd-filter-bar"),
+    cmdResultsList: document.getElementById("cmd-results-list"),
 
     // Configuración y Preferencias
     formSettings: document.getElementById("form-settings"),
@@ -290,12 +320,37 @@
       .toLowerCase();
   }
 
+  // --- Tema Global (Dark / Light) ---
   function applyTheme(theme) {
-    const mode = theme === "dark" ? "dark" : "light";
+    const mode = theme === "light" ? "light" : "dark";
+    state.settings.theme = mode;
     document.documentElement.setAttribute("data-theme", mode);
     localStorage.setItem("glosario_srs_theme", mode);
+    if (dom.themeToggleIco) {
+      dom.themeToggleIco.textContent = mode === "dark" ? "☀️" : "🌙";
+    }
+    if (dom.setTheme) {
+      dom.setTheme.value = mode;
+    }
   }
   applyTheme(state.settings.theme);
+
+  if (dom.btnThemeToggle) {
+    dom.btnThemeToggle.addEventListener("click", async () => {
+      const next = state.settings.theme === "dark" ? "light" : "dark";
+      applyTheme(next);
+      showToast(next === "dark" ? "🌙 Modo Oscuro (Obsidian) activado" : "☀️ Modo Claro activado", 2000);
+      try {
+        await fetchJsonWithPin("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ theme: next }),
+        });
+      } catch {
+        // Guardado en localStorage de todos modos
+      }
+    });
+  }
 
   function isUserAdmin() {
     if (state.stats && state.stats.current_user) {
@@ -310,9 +365,9 @@
     if (dom.setMaturityDays) dom.setMaturityDays.value = s.maturity_threshold_days ?? 21;
     if (dom.setInitialEf) dom.setInitialEf.value = s.initial_ease_factor ?? 2.5;
     if (dom.setFocusedMode) dom.setFocusedMode.value = String(s.focused_mode ?? true);
-    if (dom.setTheme) dom.setTheme.value = s.theme || "light";
+    if (dom.setTheme) dom.setTheme.value = s.theme || "dark";
     if (dom.setStepReveal) dom.setStepReveal.value = String(s.step_by_step_reveal ?? false);
-    applyTheme(s.theme || "light");
+    applyTheme(s.theme || "dark");
     if (dom.pinStatusLabel) {
       const hasPin = Boolean(getSavedPin());
       dom.pinStatusLabel.textContent = hasPin ? "✅ Configurado en este dispositivo" : "⚠️ No guardado";
@@ -355,6 +410,11 @@
     dom.btnGotoExplorer.addEventListener("click", () => switchView("guide"));
   }
 
+  if (dom.headerMasteryPill) {
+    dom.headerMasteryPill.style.cursor = "pointer";
+    dom.headerMasteryPill.addEventListener("click", () => switchView("guide"));
+  }
+
   // --- Carga de datos iniciales ---
   async function loadData() {
     try {
@@ -373,7 +433,12 @@
       state.terms = Array.isArray(termsRes) ? termsRes : [];
       state.stats = statsRes;
       if (statsRes && statsRes.settings) {
-        state.settings = { ...state.settings, ...statsRes.settings };
+        const localTheme = localStorage.getItem("glosario_srs_theme");
+        state.settings = {
+          ...state.settings,
+          ...statsRes.settings,
+          theme: localTheme || statsRes.settings.theme || "dark",
+        };
       }
 
       // Flatten categories for fast lookup
@@ -411,12 +476,21 @@
       dom.dueBadge.hidden = true;
     }
     const gm = state.stats.global_mastery;
-    const gmText = gm ? ` · Maestría Global: ${gm.mastery_score.toFixed(1)}%` : "";
+    const gmPct = gm ? Math.min(100, Math.max(0, Number(gm.mastery_score || 0))) : 0;
+    const gmText = gm ? ` · Maestría Global: ${gmPct.toFixed(1)}%` : "";
     dom.reviewedToday.textContent = `Repasados hoy: ${state.stats.reviewed_today}${gmText}`;
+
+    // Header Mastery Ring SVG
+    if (dom.headerRingFill) {
+      dom.headerRingFill.setAttribute("stroke-dasharray", `${gmPct.toFixed(1)}, 100`);
+    }
+    if (dom.headerMasteryVal) {
+      dom.headerMasteryVal.textContent = `${gmPct.toFixed(0)}%`;
+    }
   }
 
   // =========================================================================
-  // VISTA 1: EXPLORADOR TAXONÓMICO Y MAZO (MASTER-DETAIL)
+  // VISTA 1: EXPLORADOR TAXONÓMICO Y MAZO (MASTER-DETAIL) + GRAFO ONTOLÓGICO SVG
   // =========================================================================
 
   function getActiveZoomLabels() {
@@ -766,7 +840,7 @@
             <div class="detail-Swap-badges">
               <span class="chip">📍 ${escapeHtml(cat.macro_area)}</span>
               <span class="zoom-badge zoom-${cat.zoom_level}">Zoom ${cat.zoom_level} · ${escapeHtml(cat.zoom_label || `Zoom ${cat.zoom_level}`)}</span>
-              <span class="chip" style="background:#f1f5f9; color:#475569;">${catTerms.length} Términos</span>
+              <span class="chip">${catTerms.length} Términos</span>
             </div>
             <h2 class="detail-title">${escapeHtml(cat.name)}</h2>
           </div>
@@ -795,6 +869,129 @@
         if (t) renderDetailPane(t);
       });
     });
+  }
+
+  // --- Generador de Grafo Ontológico Interactivo en SVG (Fase 4) ---
+  function truncateSvgText(str, maxLen = 22) {
+    if (!str) return "";
+    return str.length > maxLen ? str.substring(0, maxLen - 1) + "…" : str;
+  }
+
+  function findTermInCatalog(name) {
+    if (!name) return null;
+    const norm = normalizeText(name.trim());
+    return state.terms.find(t => normalizeText(t.term) === norm) || null;
+  }
+
+  function buildOntoGraphSvg(term) {
+    const parentName = (term.parent_term || "").trim();
+    const rels = Array.isArray(term.related_terms)
+      ? term.related_terms.filter(Boolean).slice(0, 5)
+      : [];
+    const scopes = Array.isArray(term.other_scopes) ? term.other_scopes.filter(Boolean) : [];
+
+    if (!parentName && rels.length === 0 && scopes.length === 0) {
+      return "";
+    }
+
+    const svgW = 680;
+    const svgH = rels.length > 0 ? 255 : 175;
+    const centerX = svgW / 2;
+    const parentY = 40;
+    const currentY = parentName ? 124 : 70;
+    const childY = 212;
+
+    let edgesSvg = "";
+    let nodesSvg = "";
+
+    // 1. Nodo Supraordinado (Padre)
+    if (parentName) {
+      const parentFound = findTermInCatalog(parentName);
+      const pAttr = parentFound
+        ? `data-onto-jump="${escapeHtml(parentName)}"`
+        : `data-onto-capture="${escapeHtml(parentName)}"`;
+      const pW = Math.max(150, Math.min(250, parentName.length * 8 + 36));
+      const pX = centerX - pW / 2;
+
+      edgesSvg += `
+        <path class="onto-edge-path parent-edge" d="M ${centerX} ${parentY + 20} C ${centerX} ${(parentY + currentY) / 2}, ${centerX} ${(parentY + currentY) / 2}, ${centerX} ${currentY - 22}" />
+      `;
+
+      nodesSvg += `
+        <g class="onto-svg-node node-parent" transform="translate(${pX}, ${parentY - 20})" ${pAttr}>
+          <rect width="${pW}" height="40" />
+          <text class="node-role" x="${pW / 2}" y="14" text-anchor="middle">▲ SUPRAORDINADO ${parentFound ? "· 🔗" : "· + CAPTURAR"}</text>
+          <text x="${pW / 2}" y="30" text-anchor="middle">${escapeHtml(truncateSvgText(parentName, 28))}</text>
+        </g>
+      `;
+    }
+
+    // 2. Nodo Central (Concepto Actual)
+    const curW = Math.max(175, Math.min(270, term.term.length * 8.5 + 42));
+    const curX = centerX - curW / 2;
+    nodesSvg += `
+      <g class="onto-svg-node node-current" transform="translate(${curX}, ${currentY - 22})">
+        <rect width="${curW}" height="44" />
+        <text class="node-role" x="${curW / 2}" y="15" text-anchor="middle">★ CONCEPTO ACTUAL (ZOOM ${term.zoom_level || 1})</text>
+        <text x="${curW / 2}" y="32" text-anchor="middle">${escapeHtml(truncateSvgText(term.term, 28))}</text>
+      </g>
+    `;
+
+    // 3. Nodos Coordinados / Relacionados
+    if (rels.length > 0) {
+      const count = rels.length;
+      const slotW = svgW / count;
+
+      rels.forEach((rName, idx) => {
+        const cx = slotW * idx + slotW / 2;
+        const found = findTermInCatalog(rName);
+        const nodeClass = found ? "node-related-linked" : "node-related-unlinked";
+        const edgeClass = found ? "active-edge" : "";
+        const actionAttr = found
+          ? `data-onto-jump="${escapeHtml(rName)}"`
+          : `data-onto-capture="${escapeHtml(rName)}"`;
+        const roleLabel = found ? "🔗 EN CATÁLOGO" : "+ CAPTURAR CON IA";
+
+        const nW = Math.max(116, Math.min(slotW - 12, 156));
+        const nX = cx - nW / 2;
+        const midY = (currentY + 22 + childY - 20) / 2;
+
+        edgesSvg += `
+          <path class="onto-edge-path ${edgeClass}" d="M ${centerX} ${currentY + 22} C ${centerX} ${midY}, ${cx} ${midY}, ${cx} ${childY - 20}" />
+        `;
+
+        nodesSvg += `
+          <g class="onto-svg-node ${nodeClass}" transform="translate(${nX}, ${childY - 20})" ${actionAttr}>
+            <rect width="${nW}" height="40" />
+            <text class="node-role" x="${nW / 2}" y="14" text-anchor="middle">${roleLabel}</text>
+            <text x="${nW / 2}" y="29" text-anchor="middle">${escapeHtml(truncateSvgText(rName, 18))}</text>
+          </g>
+        `;
+      });
+    }
+
+    const scopesHtml = scopes.length > 0 ? `
+      <div class="onto-pills-footer">
+        <span class="onto-role-label">🌐 Polisemia (Otros Ámbitos):</span>
+        ${scopes.map(s => `<span class="chip" style="font-size:11px;">${escapeHtml(s)}</span>`).join("")}
+      </div>
+    ` : "";
+
+    return `
+      <div class="onto-tree-box">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
+          <h3 style="margin:0;">🕸️ Topología del Conocimiento (Grafo Ontológico Interactivo)</h3>
+          <span style="font-size:11px; color:var(--text-muted);">Toca un nodo verde para saltar o uno punteado para capturarlo</span>
+        </div>
+        <div class="onto-graph-canvas">
+          <svg class="onto-svg-stage" viewBox="0 0 ${svgW} ${svgH}" role="img" aria-label="Grafo ontológico de ${escapeHtml(term.term)}">
+            ${edgesSvg}
+            ${nodesSvg}
+          </svg>
+        </div>
+        ${scopesHtml}
+      </div>
+    `;
   }
 
   // --- Visor de Detalle (Término Canónico y Cuaderno Personal CoW) ---
@@ -830,47 +1027,7 @@
       </div>
     ` : "";
 
-    // Ontological relationships diagram
-    const parentHtml = term.parent_term ? `
-      <div class="onto-level">
-        <span class="onto-role-label">Concepto Supraordinado (Padre):</span>
-        <span class="onto-node">${escapeHtml(term.parent_term)}</span>
-      </div>
-      <div class="onto-connector">│&nbsp;↳ es subtipo o prerrequisito de</div>
-    ` : "";
-
-    const relatedChips = Array.isArray(term.related_terms) && term.related_terms.length > 0 ? `
-      <div class="onto-level" style="margin-top: 4px;">
-        <span class="onto-role-label">Vínculos Conceptuales Coordinados:</span>
-        <div style="display:flex; flex-wrap:wrap; gap:4px;">
-          ${term.related_terms.map(r => `<span class="onto-node" style="cursor:pointer;" data-onto-jump="${escapeHtml(r)}">${escapeHtml(r)}</span>`).join("")}
-        </div>
-      </div>
-    ` : "";
-
-    const otherScopesHtml = Array.isArray(term.other_scopes) && term.other_scopes.length > 0 ? `
-      <div class="onto-level" style="margin-top: 4px;">
-        <span class="onto-role-label">Polisemia (Otros Ámbitos Disciplinares):</span>
-        <div style="display:flex; flex-wrap:wrap; gap:4px;">
-          ${term.other_scopes.map(s => `<span class="chip" style="font-size:11px;">🌐 ${escapeHtml(s)}</span>`).join("")}
-        </div>
-      </div>
-    ` : "";
-
-    const ontoBlockHtml = (parentHtml || relatedChips || otherScopesHtml) ? `
-      <div class="onto-tree-box">
-        <h3>🌳 Posición en la Topología del Conocimiento (Árbol Ontológico)</h3>
-        <div class="onto-tree-diagram">
-          ${parentHtml}
-          <div class="onto-level">
-            <span class="onto-role-label">Concepto Actual:</span>
-            <span class="onto-node" style="font-weight:700; border-color:var(--primary);">${escapeHtml(term.term)}</span>
-          </div>
-          ${relatedChips}
-          ${otherScopesHtml}
-        </div>
-      </div>
-    ` : "";
+    const ontoBlockHtml = buildOntoGraphSvg(term);
 
     const notebookHtml = `
       <div class="personal-notebook-box">
@@ -907,7 +1064,7 @@
           <div>
             <div class="detail-Swap-badges">
               <span class="chip">📍 ${escapeHtml(term.macro_area)}</span>
-              <span class="chip" style="background:#e0f2fe; color:#0369a1;">${escapeHtml(cat.name)}</span>
+              <span class="chip">${escapeHtml(cat.name)}</span>
               <span class="zoom-badge zoom-${cat.zoom_level}">Zoom ${cat.zoom_level}</span>
             </div>
             <h2 class="detail-title">${escapeHtml(term.term)}</h2>
@@ -1027,18 +1184,25 @@
       });
     }
 
-    // Links: Jump onto related terms
+    // SVG Ontological Graph: Jump to existing linked term
     dom.explorerDetail.querySelectorAll("[data-onto-jump]").forEach(node => {
       node.addEventListener("click", () => {
-        const targetName = node.dataset.ontoJump.toLowerCase();
-        const found = state.terms.find(t => t.term.toLowerCase() === targetName);
+        const targetName = node.getAttribute("data-onto-jump") || "";
+        const found = findTermInCatalog(targetName);
         if (found) {
           state.selectedTermId = found.id;
           renderExplorerTree();
           renderDetailPane(found);
-        } else {
-          showToast(`El concepto "${node.dataset.ontoJump}" aún no ha sido capturado.`);
+          showToast(`🔗 Navegando a "${found.term}"`);
         }
+      });
+    });
+
+    // SVG Ontological Graph: Capture unlinked term with AI
+    dom.explorerDetail.querySelectorAll("[data-onto-capture]").forEach(node => {
+      node.addEventListener("click", () => {
+        const targetName = node.getAttribute("data-onto-capture") || "";
+        openAddTermModal(targetName, term.macro_area || "");
       });
     });
   }
@@ -1108,16 +1272,16 @@
     }
 
     if (filtered.length === 0) {
-      dom.termsBody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 24px; color: #64748b;">No se encontraron términos que coincidan con la búsqueda.</td></tr>`;
+      dom.termsBody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 24px; color: var(--text-muted);">No se encontraron términos que coincidan con la búsqueda.</td></tr>`;
       return;
     }
 
     dom.termsBody.innerHTML = filtered.map(t => {
       const scopes = Array.isArray(t.other_scopes) && t.other_scopes.length > 0
-        ? `<div style="margin-top:6px; font-weight:normal; font-size:10.5px; color:#64748b;">🌐 <i>Otros ámbitos:</i> ${t.other_scopes.map(s => escapeHtml(s)).join(" · ")}</div>`
+        ? `<div style="margin-top:6px; font-weight:normal; font-size:10.5px; color:var(--text-muted);">🌐 <i>Otros ámbitos:</i> ${t.other_scopes.map(s => escapeHtml(s)).join(" · ")}</div>`
         : "";
       const sourceHtml = t.canonical_source
-        ? `<div style="margin-top:4px; font-size:11px; color:#4338ca;">📚 <i>Fuente: ${escapeHtml(t.canonical_source)}</i></div>`
+        ? `<div style="margin-top:4px; font-size:11px; color:var(--primary);">📚 <i>Fuente: ${escapeHtml(t.canonical_source)}</i></div>`
         : "";
       const customChip = t.is_customized ? `<span class="chip-customized" style="margin-left:4px;">✨ CoW</span>` : "";
 
@@ -1137,10 +1301,12 @@
   if (dom.catFilter) dom.catFilter.addEventListener("change", renderTermsTable);
   if (dom.btnPrint) dom.btnPrint.addEventListener("click", () => window.print());
 
-  // Agregar término rápido
-  function openAddTermModal() {
-    dom.addInput.value = "";
-    if (dom.addScopeInput) dom.addScopeInput.value = "";
+  // Agregar término rápido (permite pre-llenar desde el Grafo SVG o Command Palette)
+  function openAddTermModal(prefillTerm = "", prefillScope = "") {
+    dom.addInput.value = typeof prefillTerm === "string" ? prefillTerm : "";
+    if (dom.addScopeInput) {
+      dom.addScopeInput.value = typeof prefillScope === "string" ? prefillScope : "";
+    }
     dom.addStatus.className = "add-status";
     dom.addStatus.textContent = "";
     dom.addSubmit.disabled = false;
@@ -1148,8 +1314,8 @@
     dom.addInput.focus();
   }
 
-  if (dom.btnAdd) dom.btnAdd.addEventListener("click", openAddTermModal);
-  if (dom.btnHeaderAdd) dom.btnHeaderAdd.addEventListener("click", openAddTermModal);
+  if (dom.btnAdd) dom.btnAdd.addEventListener("click", () => openAddTermModal());
+  if (dom.btnHeaderAdd) dom.btnHeaderAdd.addEventListener("click", () => openAddTermModal());
   if (dom.addCancel) dom.addCancel.addEventListener("click", () => dom.dlgAdd.close());
 
   dom.formAdd.addEventListener("submit", async (e) => {
@@ -1302,8 +1468,40 @@
   }
 
   // =========================================================================
-  // VISTA 3: FLASHCARDS SRS Y ENTRENAMIENTO
+  // VISTA 3: FLASHCARDS 3D SRS + BARRA TIMELINE ANIMADA DE TANDA (FASE 2)
   // =========================================================================
+
+  function renderSessionProgress() {
+    if (!dom.sessionProgressSegments) return;
+    const total = state.dueCards.length;
+    const currentIdx = state.currentDueIndex;
+    const completed = Math.min(currentIdx, total);
+
+    if (dom.sessionProgressStats) {
+      dom.sessionProgressStats.textContent = `${completed} / ${total} completadas`;
+    }
+    if (dom.sessionProgressTitle) {
+      if (state.activeFocus && state.activeFocus.category) {
+        dom.sessionProgressTitle.textContent = `🎯 Tanda Enfocada · ${state.activeFocus.category}`;
+      } else {
+        dom.sessionProgressTitle.textContent = "Progreso de la Tanda Actual";
+      }
+    }
+
+    const segs = [];
+    for (let i = 0; i < total; i++) {
+      let cls = "sp-seg";
+      if (i < currentIdx) {
+        const r = state.sessionHistory[i] || 3;
+        cls += ` done-${r}`;
+      } else if (i === currentIdx) {
+        cls += " current";
+      }
+      const cardName = state.dueCards[i] ? state.dueCards[i].term : `Tarjeta ${i + 1}`;
+      segs.push(`<div class="${cls}" title="${escapeHtml(cardName)}"></div>`);
+    }
+    dom.sessionProgressSegments.innerHTML = segs.join("");
+  }
 
   async function loadDueCards() {
     try {
@@ -1313,6 +1511,7 @@
       state.dueCards = data.cards || [];
       state.activeFocus = data.active_focus || null;
       state.currentDueIndex = 0;
+      state.sessionHistory = [];
 
       const count = data.count || state.dueCards.length;
       dom.dueNum.textContent = count;
@@ -1349,9 +1548,11 @@
       return;
     }
 
+    renderSessionProgress();
+
     state.isCardRevealed = false;
     state.revealStep = 0;
-    dom.flashcard.classList.remove("revealed");
+    dom.flashcard.classList.remove("revealed", "peek-front");
     dom.fcAnswer.hidden = true;
     if (dom.fcBlockDef) dom.fcBlockDef.hidden = false;
     if (dom.fcBlockAnalog) dom.fcBlockAnalog.hidden = false;
@@ -1359,12 +1560,38 @@
     if (dom.fcBlockMeta) dom.fcBlockMeta.hidden = true;
     dom.ratingPanel.hidden = true;
     dom.fcHint.hidden = false;
-    dom.fcHint.textContent = state.settings.step_by_step_reveal
-      ? "Paso 1/3: Intenta explicarlo · toca para revelar Definición Técnica"
-      : "Intenta explicarlo en voz alta · toca para revelar";
+    dom.fcHint.innerHTML = state.settings.step_by_step_reveal
+      ? `<span>Paso 1/3: Intenta explicarlo · toca o presiona <kbd>Espacio</kbd> para revelar Definición</span>`
+      : `<span>Intenta explicarlo en voz alta · toca o presiona <kbd>Espacio</kbd> para girar 180°</span>`;
 
-    dom.fcCategory.textContent = `${card.macro_area} · ${card.category}`;
+    // Front Face Metadata
+    const catText = `${card.macro_area} · ${card.category}`;
+    dom.fcCategory.textContent = catText;
     dom.fcTerm.textContent = card.term;
+
+    const zoomLvl = card.zoom_level || 1;
+    if (dom.fcZoomBadge) {
+      dom.fcZoomBadge.textContent = `Zoom ${zoomLvl}`;
+      dom.fcZoomBadge.className = `zoom-badge zoom-${zoomLvl}`;
+    }
+
+    if (dom.fcMaturityPill) {
+      const srs = card.srs || {};
+      const interval = srs.interval_days || 0;
+      dom.fcMaturityPill.textContent = interval > 0 ? `⏱️ ${interval}d · EF ${(srs.ease_factor || 2.5).toFixed(1)}` : "🌱 Nuevo";
+    }
+
+    if (dom.fcFrontOntoPreview) {
+      if (card.parent_term) {
+        dom.fcFrontOntoPreview.innerHTML = `<span class="chip" style="font-size:11.5px;">▲ Supraordinado: <b>${escapeHtml(card.parent_term)}</b></span>`;
+      } else {
+        dom.fcFrontOntoPreview.innerHTML = "";
+      }
+    }
+
+    // Back Face Header Sync
+    if (dom.fcBackCategory) dom.fcBackCategory.textContent = catText;
+    if (dom.fcBackTerm) dom.fcBackTerm.textContent = card.term;
 
     // Use customized student version if present, fallback to canonical
     dom.fcDef.textContent = card.effective_definition || card.technical_definition;
@@ -1386,7 +1613,7 @@
       }
     }
 
-    // Fuente Cero y Topología
+    // Fuente Cero y Topología en el Reverso
     if (dom.fcSource) {
       dom.fcSource.textContent = card.canonical_source
         ? `📚 Fuente Cero: ${card.canonical_source}`
@@ -1395,10 +1622,10 @@
 
     if (dom.fcRelations) {
       const rels = Array.isArray(card.related_terms) ? card.related_terms : [];
-      const parent = card.parent_term ? `Supraordinado: ${card.parent_term}` : "";
-      const relText = rels.length > 0 ? `Vínculos: ${rels.join(" · ")}` : "";
+      const parent = card.parent_term ? `▲ Supraordinado: ${card.parent_term}` : "";
+      const relText = rels.length > 0 ? `🔗 Vínculos: ${rels.join(" · ")}` : "";
       const parts = [parent, relText].filter(Boolean);
-      dom.fcRelations.textContent = parts.length > 0 ? `🌳 ${parts.join(" | ")}` : "";
+      dom.fcRelations.textContent = parts.length > 0 ? parts.join("   |   ") : "";
     }
 
     // Previsualización de intervalos en los botones
@@ -1426,13 +1653,17 @@
   }
 
   function revealCard() {
-    if (state.isCardRevealed) return;
+    if (state.isCardRevealed) {
+      dom.flashcard.classList.remove("peek-front");
+      return;
+    }
     const hasLimits = dom.fcBlockTradeoff && dom.fcBlockTradeoff.dataset.hasLimits === "true";
 
     if (!state.settings.step_by_step_reveal) {
       state.isCardRevealed = true;
       state.revealStep = 3;
       dom.flashcard.classList.add("revealed");
+      dom.flashcard.classList.remove("peek-front");
       dom.fcAnswer.hidden = false;
       if (dom.fcBlockDef) dom.fcBlockDef.hidden = false;
       if (dom.fcBlockAnalog) dom.fcBlockAnalog.hidden = false;
@@ -1445,18 +1676,20 @@
 
     state.revealStep += 1;
     dom.fcAnswer.hidden = false;
+    dom.flashcard.classList.add("revealed");
+    dom.flashcard.classList.remove("peek-front");
+
     if (state.revealStep === 1) {
       if (dom.fcBlockDef) dom.fcBlockDef.hidden = false;
       if (dom.fcBlockAnalog) dom.fcBlockAnalog.hidden = true;
       if (dom.fcBlockTradeoff) dom.fcBlockTradeoff.hidden = true;
       if (dom.fcBlockMeta) dom.fcBlockMeta.hidden = true;
-      dom.fcHint.textContent = "Paso 2/3: Toca para revelar la Analogía Cotidiana";
+      showToast("Paso 1/3: Toca la tarjeta o Espacio para revelar la Analogía", 2000);
     } else if (state.revealStep === 2) {
       if (dom.fcBlockAnalog) dom.fcBlockAnalog.hidden = false;
-      dom.fcHint.textContent = "Paso 3/3: Toca para revelar Límites, Fuente Canónica y calificar";
+      showToast("Paso 2/3: Toca de nuevo para revelar Límites y Fuente Canónica", 2000);
     } else {
       state.isCardRevealed = true;
-      dom.flashcard.classList.add("revealed");
       if (dom.fcBlockTradeoff) dom.fcBlockTradeoff.hidden = !hasLimits;
       if (dom.fcBlockMeta) dom.fcBlockMeta.hidden = false;
       dom.fcHint.hidden = true;
@@ -1464,7 +1697,18 @@
     }
   }
 
+  if (dom.fcFlipBack) {
+    dom.fcFlipBack.addEventListener("click", (e) => {
+      e.stopPropagation();
+      dom.flashcard.classList.toggle("peek-front");
+    });
+  }
+
   dom.flashcard.addEventListener("click", () => {
+    if (dom.flashcard.classList.contains("peek-front")) {
+      dom.flashcard.classList.remove("peek-front");
+      return;
+    }
     if (!state.isCardRevealed) {
       revealCard();
     }
@@ -1485,7 +1729,9 @@
         throw new Error("Error en la calificación");
       }
 
+      state.sessionHistory[state.currentDueIndex] = rating;
       const data = await res.json();
+
       if (data.active_focus && data.active_focus.category_id !== card.category_id) {
         showToast(`🏆 ¡Categoría "${card.category}" dominada! Pasando a "${data.active_focus.category}"`, 4500);
         await loadDueCards();
@@ -1518,18 +1764,345 @@
     });
   });
 
+  // =========================================================================
+  // COMMAND PALETTE OMNIBAR (CTRL + K / CMD + K) - FASE 3
+  // =========================================================================
+
+  function openCommandPalette() {
+    if (!dom.dlgCmdPalette) return;
+    state.cmdFilter = "all";
+    state.cmdActiveIndex = 0;
+    if (dom.cmdFilterBar) {
+      dom.cmdFilterBar.querySelectorAll(".cmd-filter-pill").forEach(btn => {
+        btn.classList.toggle("active", btn.dataset.cmdFilter === "all");
+      });
+    }
+    if (dom.cmdSearchInput) {
+      dom.cmdSearchInput.value = "";
+    }
+    renderCmdResults();
+    if (!dom.dlgCmdPalette.open) {
+      dom.dlgCmdPalette.showModal();
+    }
+    if (dom.cmdSearchInput) {
+      dom.cmdSearchInput.focus();
+    }
+  }
+
+  function closeCommandPalette() {
+    if (dom.dlgCmdPalette && dom.dlgCmdPalette.open) {
+      dom.dlgCmdPalette.close();
+    }
+  }
+
+  function buildCommandItems(query) {
+    const q = normalizeText(query);
+    const filter = state.cmdFilter;
+    const results = [];
+
+    // 1. Acciones rápidas
+    if (filter === "all" || filter === "actions") {
+      const actions = [
+        {
+          type: "action",
+          group: "Acciones Rápidas",
+          icon: "🎯",
+          title: "Ir a Entrenar SRS (Flashcards 3D)",
+          sub: `${state.dueCards.length} tarjetas pendientes hoy`,
+          badge: "Vista",
+          run: () => switchView("train"),
+        },
+        {
+          type: "action",
+          group: "Acciones Rápidas",
+          icon: "➕",
+          title: "Capturar Nuevo Término con IA (Fuente Cero)",
+          sub: query ? `Capturar "${query}" con rigor canónico` : "Abrir modal de captura de conceptos",
+          badge: "Acción",
+          run: () => openAddTermModal(query, ""),
+        },
+        {
+          type: "action",
+          group: "Acciones Rápidas",
+          icon: "🧭",
+          title: "Abrir Explorador Taxonómico y Grafo Ontológico",
+          sub: `${state.terms.length} términos en ${state.categories.length} categorías`,
+          badge: "Vista",
+          run: () => switchView("guide"),
+        },
+        {
+          type: "action",
+          group: "Acciones Rápidas",
+          icon: "📑",
+          title: "Abrir Compendio Tabular Imprimible",
+          sub: "Tabla comparativa completa y exportación PDF",
+          badge: "Vista",
+          run: () => switchView("table"),
+        },
+        {
+          type: "action",
+          group: "Acciones Rápidas",
+          icon: state.settings.theme === "dark" ? "☀️" : "🌙",
+          title: `Cambiar a Modo ${state.settings.theme === "dark" ? "Claro (Vercel Light)" : "Oscuro (Linear Obsidian)"}`,
+          sub: "Alternar paleta visual instantáneamente",
+          badge: "Tema",
+          run: () => dom.btnThemeToggle && dom.btnThemeToggle.click(),
+        },
+        {
+          type: "action",
+          group: "Acciones Rápidas",
+          icon: "⚙️",
+          title: "Preferencias de Estudio y Parámetros SM-2",
+          sub: "Ajustar límite de tanda diaria, umbral de madurez y PIN",
+          badge: "Ajustes",
+          run: () => switchView("settings"),
+        },
+      ];
+
+      if (isUserAdmin()) {
+        actions.push({
+          type: "action",
+          group: "Acciones Rápidas",
+          icon: "🛠️",
+          title: "Consola de Administración, Arbitraje y BI",
+          sub: "Auditar propuestas canónicas, multi-tenant y métricas",
+          badge: "Admin",
+          run: () => switchView("admin"),
+        });
+      }
+
+      actions.forEach(act => {
+        if (!q || normalizeText(`${act.title} ${act.sub}`).includes(q)) {
+          results.push(act);
+        }
+      });
+    }
+
+    // 2. Categorías y Ramas Taxonómicas
+    if (filter === "all" || filter === "categories") {
+      const matchedCats = state.categories.filter(c => {
+        if (!q) return true;
+        return normalizeText(`${c.name} ${c.macro_area} ${c.description || ""}`).includes(q);
+      }).slice(0, filter === "categories" ? 20 : 5);
+
+      matchedCats.forEach(c => {
+        results.push({
+          type: "category",
+          group: "Categorías y Ramas",
+          icon: "📂",
+          title: c.name,
+          sub: `📍 ${c.macro_area} · Zoom ${c.zoom_level} · ${c.term_count || 0} términos`,
+          badge: `Z${c.zoom_level}`,
+          run: () => {
+            switchView("guide");
+            state.selectedCatId = c.id;
+            state.selectedTermId = null;
+            renderExplorerTree();
+            renderCatDetailPane(c);
+          },
+        });
+      });
+    }
+
+    // 3. Términos Canónicos
+    if (filter === "all" || filter === "terms") {
+      const matchedTerms = state.terms.filter(t => {
+        if (!q) return true;
+        const relStr = Array.isArray(t.related_terms) ? t.related_terms.join(" ") : "";
+        const hay = normalizeText(`${t.term} ${t.category} ${t.macro_area} ${t.technical_definition} ${t.canonical_source || ""} ${t.parent_term || ""} ${relStr}`);
+        return hay.includes(q);
+      }).slice(0, filter === "terms" ? 35 : 12);
+
+      matchedTerms.forEach(t => {
+        const srs = t.srs || {};
+        results.push({
+          type: "term",
+          group: "Conceptos Canónicos",
+          icon: t.is_customized ? "✨" : "📘",
+          title: t.term,
+          sub: `${t.macro_area} › ${t.category} · 📚 ${t.canonical_source || "Fuente Cero"}`,
+          badge: srs.interval_days ? `${srs.interval_days}d` : "Nuevo",
+          run: () => {
+            switchView("guide");
+            state.selectedTermId = t.id;
+            renderExplorerTree();
+            renderDetailPane(t);
+          },
+        });
+      });
+    }
+
+    return results;
+  }
+
+  function renderCmdResults() {
+    if (!dom.cmdResultsList) return;
+    const rawQuery = dom.cmdSearchInput ? dom.cmdSearchInput.value.trim() : "";
+    const items = buildCommandItems(rawQuery);
+    state.cmdMatchedItems = items;
+
+    if (state.cmdActiveIndex >= items.length) {
+      state.cmdActiveIndex = Math.max(0, items.length - 1);
+    }
+
+    if (items.length === 0) {
+      dom.cmdResultsList.innerHTML = `
+        <div class="admin-empty" style="padding:28px 16px;">
+          <p style="margin:0 0 10px;">No se encontraron resultados para "<b>${escapeHtml(rawQuery)}</b>".</p>
+          <button type="button" class="btn btn-sm btn-primary" id="cmd-empty-capture">
+            ➕ Capturar "${escapeHtml(rawQuery)}" con IA en el Catálogo Canónico
+          </button>
+        </div>
+      `;
+      const btnCap = document.getElementById("cmd-empty-capture");
+      if (btnCap) {
+        btnCap.addEventListener("click", () => {
+          closeCommandPalette();
+          openAddTermModal(rawQuery, "");
+        });
+      }
+      return;
+    }
+
+    let lastGroup = null;
+    let html = "";
+
+    items.forEach((item, idx) => {
+      if (item.group !== lastGroup) {
+        lastGroup = item.group;
+        html += `<div class="cmd-group-label">${escapeHtml(lastGroup)}</div>`;
+      }
+      const isActive = idx === state.cmdActiveIndex;
+      html += `
+        <div class="cmd-item ${isActive ? "active" : ""}" data-cmd-idx="${idx}" role="option" aria-selected="${isActive}">
+          <div class="cmd-item-icon">${item.icon}</div>
+          <div class="cmd-item-body">
+            <div class="cmd-item-title">${escapeHtml(item.title)}</div>
+            <div class="cmd-item-sub">${escapeHtml(item.sub)}</div>
+          </div>
+          <div class="cmd-item-right">
+            <span class="chip" style="font-size:10.5px;">${escapeHtml(item.badge)}</span>
+          </div>
+        </div>
+      `;
+    });
+
+    dom.cmdResultsList.innerHTML = html;
+
+    dom.cmdResultsList.querySelectorAll(".cmd-item").forEach(el => {
+      el.addEventListener("mouseenter", () => {
+        const idx = parseInt(el.dataset.cmdIdx, 10);
+        state.cmdActiveIndex = idx;
+        dom.cmdResultsList.querySelectorAll(".cmd-item").forEach((row, rIdx) => {
+          row.classList.toggle("active", rIdx === idx);
+        });
+      });
+      el.addEventListener("click", () => {
+        const idx = parseInt(el.dataset.cmdIdx, 10);
+        const chosen = state.cmdMatchedItems[idx];
+        if (chosen && typeof chosen.run === "function") {
+          closeCommandPalette();
+          chosen.run();
+        }
+      });
+    });
+
+    const activeRow = dom.cmdResultsList.querySelector(".cmd-item.active");
+    if (activeRow) {
+      activeRow.scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  if (dom.btnCmdPalette) {
+    dom.btnCmdPalette.addEventListener("click", openCommandPalette);
+  }
+  if (dom.cmdCloseBtn) {
+    dom.cmdCloseBtn.addEventListener("click", closeCommandPalette);
+  }
+  if (dom.dlgCmdPalette) {
+    dom.dlgCmdPalette.addEventListener("click", (e) => {
+      if (e.target === dom.dlgCmdPalette) {
+        closeCommandPalette();
+      }
+    });
+  }
+  if (dom.cmdSearchInput) {
+    dom.cmdSearchInput.addEventListener("input", () => {
+      state.cmdActiveIndex = 0;
+      renderCmdResults();
+    });
+    dom.cmdSearchInput.addEventListener("keydown", (e) => {
+      const len = state.cmdMatchedItems.length;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        if (len > 0) {
+          state.cmdActiveIndex = (state.cmdActiveIndex + 1) % len;
+          renderCmdResults();
+        }
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        if (len > 0) {
+          state.cmdActiveIndex = (state.cmdActiveIndex - 1 + len) % len;
+          renderCmdResults();
+        }
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        const chosen = state.cmdMatchedItems[state.cmdActiveIndex];
+        if (chosen && typeof chosen.run === "function") {
+          closeCommandPalette();
+          chosen.run();
+        }
+      }
+    });
+  }
+  if (dom.cmdFilterBar) {
+    dom.cmdFilterBar.querySelectorAll(".cmd-filter-pill").forEach(btn => {
+      btn.addEventListener("click", () => {
+        state.cmdFilter = btn.dataset.cmdFilter || "all";
+        state.cmdActiveIndex = 0;
+        dom.cmdFilterBar.querySelectorAll(".cmd-filter-pill").forEach(b => {
+          b.classList.toggle("active", b === btn);
+        });
+        renderCmdResults();
+        if (dom.cmdSearchInput) dom.cmdSearchInput.focus();
+      });
+    });
+  }
+
+  // Atajos globales de teclado (Ctrl+K / Cmd+K y Controles SRS)
   window.addEventListener("keydown", (e) => {
+    // Ctrl+K o Cmd+K abre/cierra Command Palette desde cualquier lugar
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+      e.preventDefault();
+      if (dom.dlgCmdPalette && dom.dlgCmdPalette.open) {
+        closeCommandPalette();
+      } else {
+        openCommandPalette();
+      }
+      return;
+    }
+
+    // Si hay un diálogo modal abierto, no interceptar teclas de entrenamiento
+    if (document.querySelector("dialog[open]")) return;
+
     const activeView = document.querySelector(".view.active");
     if (!activeView || activeView.id !== "view-train") return;
-    if (document.activeElement.tagName === "INPUT" || document.activeElement.tagName === "TEXTAREA" || document.activeElement.tagName === "DIALOG") return;
+    if (document.activeElement.tagName === "INPUT" || document.activeElement.tagName === "TEXTAREA" || document.activeElement.tagName === "SELECT") return;
 
     if (e.code === "Space" && !state.isCardRevealed) {
       e.preventDefault();
       revealCard();
     } else if (state.isCardRevealed) {
-      if (e.key === "1") submitRating(1);
-      if (e.key === "2") submitRating(2);
-      if (e.key === "3") submitRating(3);
+      if (e.code === "Space") {
+        e.preventDefault();
+        dom.flashcard.classList.toggle("peek-front");
+      } else if (e.key === "1") {
+        submitRating(1);
+      } else if (e.key === "2") {
+        submitRating(2);
+      } else if (e.key === "3") {
+        submitRating(3);
+      }
     }
   });
 
@@ -1551,7 +2124,7 @@
         maturity_threshold_days: parseInt(dom.setMaturityDays.value, 10) || 21,
         initial_ease_factor: parseFloat(dom.setInitialEf.value) || 2.5,
         focused_mode: dom.setFocusedMode.value === "true",
-        theme: dom.setTheme.value === "dark" ? "dark" : "light",
+        theme: dom.setTheme.value === "light" ? "light" : "dark",
         step_by_step_reveal: dom.setStepReveal.value === "true",
       };
       dom.btnSaveSettings.disabled = true;
@@ -1879,14 +2452,14 @@
               <p><b>Definición:</b> ${escapeHtml(p.canonical_definition)}</p>
               <p><b>Analogía:</b> ${escapeHtml(p.canonical_analogy)}</p>
               ${p.canonical_limits ? `<p><b>Límites:</b> ${escapeHtml(p.canonical_limits)}</p>` : ''}
-              <p style="font-size:11.5px; color:#475569; margin-top:6px;"><i>Fuente: ${escapeHtml(p.canonical_source || 'Sin fuente')}</i></p>
+              <p style="font-size:11.5px; color:var(--text-muted); margin-top:6px;"><i>Fuente: ${escapeHtml(p.canonical_source || 'Sin fuente')}</i></p>
             </div>
             <div class="diff-col proposed">
               <h4>Propuesta del Estudiante</h4>
               <p><b>Definición:</b> ${escapeHtml(p.proposed_definition || p.canonical_definition)}</p>
               <p><b>Analogía:</b> ${escapeHtml(p.proposed_analogy || p.canonical_analogy)}</p>
               ${p.proposed_limits ? `<p><b>Límites:</b> ${escapeHtml(p.proposed_limits)}</p>` : ''}
-              <p style="font-size:11.5px; color:#166534; margin-top:6px;"><b>Fuente citada:</b> ${escapeHtml(p.proposal_source || '—')}</p>
+              <p style="font-size:11.5px; color:var(--success); margin-top:6px;"><b>Fuente citada:</b> ${escapeHtml(p.proposal_source || '—')}</p>
             </div>
           </div>
 

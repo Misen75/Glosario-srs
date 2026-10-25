@@ -3,25 +3,60 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#2563eb">
+  <meta name="theme-color" content="#090a0f">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Glosario SRS">
   <title>Compendio Canónico Multidisciplinar · Sistema SRS</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/icon.svg">
-  <link rel="stylesheet" href="/styles.css?v=3.1">
+  <link rel="stylesheet" href="/styles.css?v=4.0">
 </head>
 <body>
+  <div class="ambient-glow" aria-hidden="true"></div>
+
   <div class="container">
     <header class="app-header">
       <div class="header-main">
-        <div>
+        <div class="brand-block">
+          <div class="brand-badge-row">
+            <span class="brand-status-dot"></span>
+            <span class="brand-eyebrow">SISTEMA DE CONOCIMIENTO CANÓNICO · SRS v4.0</span>
+          </div>
           <h1 id="app-title">Compendio Canónico Multidisciplinar y Sistema SRS</h1>
           <p class="subtitle" id="subtitle">Arquitectura de Conocimiento Basada en Fuentes Primarias, Granularidad Ontológica Adaptativa y Repetición Espaciada</p>
         </div>
+
         <div class="header-actions">
-          <button class="btn btn-primary" id="btn-header-add">+ Capturar Término</button>
+          <button type="button" class="cmd-trigger-btn" id="btn-cmd-palette" title="Abrir buscador rápido y paleta de comandos (Ctrl+K)">
+            <span class="cmd-trigger-left">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+              <span>Buscar o saltar…</span>
+            </span>
+            <span class="cmd-trigger-kbd"><kbd>Ctrl</kbd><kbd>K</kbd></span>
+          </button>
+
+          <div class="header-mastery-pill" id="header-mastery-pill" title="Maestría Canónica Global (Términos con intervalo ≥ 21 días)">
+            <svg class="mastery-ring-svg" width="28" height="28" viewBox="0 0 36 36">
+              <path class="ring-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke-width="3.5" />
+              <path class="ring-fill" id="header-ring-fill" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke-width="3.5" stroke-linecap="round" />
+            </svg>
+            <div class="header-mastery-meta">
+              <span class="hm-label">Maestría</span>
+              <b class="hm-val" id="header-mastery-val">0%</b>
+            </div>
+          </div>
+
+          <button type="button" class="btn btn-icon-only" id="btn-theme-toggle" title="Alternar tema visual (Claro / Oscuro)" aria-label="Alternar tema">
+            <span id="theme-toggle-ico">🌙</span>
+          </button>
+
+          <button class="btn btn-primary btn-glow" id="btn-header-add">
+            <span>+ Capturar Término</span>
+          </button>
         </div>
       </div>
     </header>
@@ -76,12 +111,15 @@
           <div id="areas" class="master-tree-list"></div>
         </aside>
 
-        <!-- Panel de Detalle: Visor de Ficha Canónica, Fuente Cero y Árbol Ontológico -->
+        <!-- Panel de Detalle: Visor de Ficha Canónica, Fuente Cero y Grafo Ontológico -->
         <main class="explorer-detail" id="explorer-detail" aria-live="polite">
           <div class="detail-placeholder">
             <div class="empty-ico">🌲</div>
             <h3>Selecciona una Categoría o un Término del Árbol</h3>
-            <p>A la izquierda puedes navegar la jerarquía disciplinar, activar o excluir elementos de tu mazo personal y visualizar aquí su definición canónica, fuente primaria y árbol de relaciones ontológicas.</p>
+            <p>A la izquierda puedes navegar la jerarquía disciplinar, activar o excluir elementos de tu mazo personal y visualizar aquí su definición canónica, fuente primaria y su <b>Grafo Interactivo de Relaciones Ontológicas</b>.</p>
+            <div class="placeholder-shortcuts">
+              <span>Atajo rápido: presiona <kbd>Ctrl</kbd> + <kbd>K</kbd> para buscar cualquier término al instante</span>
+            </div>
           </div>
         </main>
       </div>
@@ -98,68 +136,127 @@
         </div>
       </div>
       <p class="result-count" id="result-count"></p>
-      <table class="glossary">
-        <thead>
-          <tr>
-            <th>Categoría y Área</th>
-            <th>Término y Topología</th>
-            <th>Definición Técnica y Fuente Canónica</th>
-            <th>Analogía Cotidiana</th>
-            <th>Límites Ontológicos y Condiciones de Inaplicabilidad</th>
-          </tr>
-        </thead>
-        <tbody id="terms-body"></tbody>
-      </table>
+      <div class="table-glass-wrapper">
+        <table class="glossary">
+          <thead>
+            <tr>
+              <th>Categoría y Área</th>
+              <th>Término y Topología</th>
+              <th>Definición Técnica y Fuente Canónica</th>
+              <th>Analogía Cotidiana</th>
+              <th>Límites Ontológicos y Condiciones de Inaplicabilidad</th>
+            </tr>
+          </thead>
+          <tbody id="terms-body"></tbody>
+        </table>
+      </div>
     </section>
 
-    <!-- ============ VISTA 3: Entrenamiento (Flashcards SRS) ============ -->
+    <!-- ============ VISTA 3: Entrenamiento (Flashcards 3D Interactivas) ============ -->
     <section id="view-train" class="view" aria-label="Entrenamiento">
       <div class="train-head">
         <div class="due-count"><span id="due-num">0</span> <span id="due-label">términos por repasar hoy</span></div>
         <div class="reviewed-today" id="reviewed-today"></div>
       </div>
 
+      <!-- Barra de Progreso de Tanda Animada (Story / Session Timeline) -->
+      <div id="session-progress-wrap" class="session-progress-wrap" hidden>
+        <div class="session-progress-top">
+          <span class="sp-title" id="session-progress-title">Progreso de la tanda actual</span>
+          <span class="sp-stats" id="session-progress-stats">Tarjeta 1 de 1</span>
+        </div>
+        <div class="session-progress-segments" id="session-progress-segments" role="progressbar" aria-label="Progreso de la sesión"></div>
+      </div>
+
       <div id="train-empty" class="empty" hidden>
-        <div class="empty-ico">✅</div>
+        <div class="empty-ico">✨</div>
         <h2>¡Nada pendiente por hoy en tu mazo activo!</h2>
-        <p>Vuelve mañana, ajusta tu selección en <b>Explorador y Mazo</b> o captura nuevos conceptos.</p>
+        <p>Has completado tu cuota de repaso espaciado. Vuelve mañana, ajusta tu selección en <b>Explorador y Mazo</b> o captura nuevos conceptos con <kbd>Ctrl</kbd> + <kbd>K</kbd>.</p>
       </div>
 
       <div id="train-area" hidden>
-        <article class="flashcard" id="flashcard" tabindex="0" aria-live="polite">
-          <div class="fc-meta">
-            <span class="chip" id="fc-category"></span>
-            <button class="help-btn" id="fc-help" aria-label="¿Qué significa esta categoría?">?</button>
-          </div>
-          <h2 class="fc-term" id="fc-term"></h2>
-          <p class="fc-hint" id="fc-hint">Intenta explicarlo en voz alta · toca para revelar</p>
-          <div class="fc-answer" id="fc-answer" hidden>
-            <div class="fc-block" id="fc-block-def">
-              <h3>Definición técnica canónica</h3>
-              <p id="fc-def"></p>
+        <!-- Escenario con Perspectiva 3D Física -->
+        <div class="fc-3d-stage" id="fc-3d-stage">
+          <article class="flashcard fc-3d-card" id="flashcard" tabindex="0" aria-live="polite">
+            <div class="fc-3d-inner" id="fc-3d-inner">
+              <!-- CARA FRONTAL (ANVERSO 3D: Reto de Evocación Activa) -->
+              <div class="fc-face fc-face-front" id="fc-face-front">
+                <div class="fc-spotlight" aria-hidden="true"></div>
+                <div class="fc-meta">
+                  <div class="fc-meta-badges">
+                    <span class="chip" id="fc-category"></span>
+                    <span class="zoom-badge" id="fc-zoom-badge">Zoom 1</span>
+                    <span class="fc-maturity-pill" id="fc-maturity-pill">Nuevo</span>
+                  </div>
+                  <button type="button" class="help-btn" id="fc-help" aria-label="¿Qué significa esta categoría?">?</button>
+                </div>
+
+                <div class="fc-front-center">
+                  <span class="fc-prompt-eyebrow">EVOCACIÓN ACTIVA · EXPLICA EL CONCEPTO</span>
+                  <h2 class="fc-term" id="fc-term"></h2>
+                  <div class="fc-front-onto-preview" id="fc-front-onto-preview"></div>
+                </div>
+
+                <div class="fc-front-footer">
+                  <p class="fc-hint" id="fc-hint">Intenta explicarlo en voz alta · toca o presiona <kbd>Espacio</kbd> para voltear en 3D ↻</p>
+                </div>
+              </div>
+
+              <!-- CARA POSTERIOR (REVERSO 3D: Verdad Canónica, Analogía, Límites y Fuente Cero) -->
+              <div class="fc-face fc-face-back" id="fc-face-back">
+                <div class="fc-back-header">
+                  <div class="fc-back-title-group">
+                    <span class="chip" id="fc-back-category"></span>
+                    <h3 class="fc-back-term" id="fc-back-term"></h3>
+                  </div>
+                  <button type="button" class="btn btn-sm fc-flip-back-btn" id="fc-flip-back" title="Voltear al anverso de la tarjeta">
+                    ↺ Ver anverso
+                  </button>
+                </div>
+
+                <div class="fc-answer" id="fc-answer" hidden>
+                  <div class="fc-quadrants-grid">
+                    <div class="fc-block" id="fc-block-def">
+                      <h3>📐 Definición técnica canónica</h3>
+                      <p id="fc-def"></p>
+                    </div>
+                    <div class="fc-block analog" id="fc-block-analog">
+                      <h3>💡 Analogía cotidiana</h3>
+                      <p id="fc-analog"></p>
+                    </div>
+                  </div>
+
+                  <div class="fc-block tradeoff" id="fc-block-tradeoff">
+                    <h3>⚠️ Límites y Condiciones de Inaplicabilidad</h3>
+                    <p id="fc-tradeoff"></p>
+                  </div>
+
+                  <div class="fc-block source-block" id="fc-block-meta" hidden>
+                    <h3>📚 Respaldo Epistemológico y Topología Ontológica</h3>
+                    <p id="fc-source"></p>
+                    <div id="fc-relations" class="fc-relations"></div>
+                  </div>
+                </div>
+              </div>
             </div>
-            <div class="fc-block analog" id="fc-block-analog">
-              <h3>Analogía cotidiana</h3>
-              <p id="fc-analog"></p>
-            </div>
-            <div class="fc-block tradeoff" id="fc-block-tradeoff">
-              <h3>Límites y Condiciones de Inaplicabilidad</h3>
-              <p id="fc-tradeoff"></p>
-            </div>
-            <div class="fc-block source-block" id="fc-block-meta" hidden>
-              <h3>Respaldo Epistemológico y Topología Ontológica</h3>
-              <p id="fc-source"></p>
-              <div id="fc-relations" class="fc-relations"></div>
-            </div>
-          </div>
-        </article>
+          </article>
+        </div>
 
         <div class="rating" id="rating" hidden>
-          <button class="rate rate-1" data-rating="1"><b>Olvidado</b><small id="pv-1">Repetir hoy</small></button>
-          <button class="rate rate-2" data-rating="2"><b>Con duda</b><small id="pv-2">Corto plazo</small></button>
-          <button class="rate rate-3" data-rating="3"><b>Dominado</b><small id="pv-3">Espaciar</small></button>
+          <button class="rate rate-1" data-rating="1">
+            <div class="rate-top"><span class="rate-title">Olvidado</span><kbd>1</kbd></div>
+            <small id="pv-1">Repetir hoy</small>
+          </button>
+          <button class="rate rate-2" data-rating="2">
+            <div class="rate-top"><span class="rate-title">Con duda</span><kbd>2</kbd></div>
+            <small id="pv-2">Corto plazo</small>
+          </button>
+          <button class="rate rate-3" data-rating="3">
+            <div class="rate-top"><span class="rate-title">Dominado</span><kbd>3</kbd></div>
+            <small id="pv-3">Espaciar</small>
+          </button>
         </div>
-        <p class="kbd-hint">Teclado: <kbd>Espacio</kbd> revelar · <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> calificar</p>
+        <p class="kbd-hint">Controles rápidos: <kbd>Espacio</kbd> voltear tarjeta 3D · <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> calificar retención · <kbd>Ctrl</kbd>+<kbd>K</kbd> buscar</p>
       </div>
     </section>
 
@@ -193,15 +290,15 @@
             <div class="form-row">
               <label for="set-theme">Tema Visual de la Interfaz</label>
               <select id="set-theme">
-                <option value="light">☀️ Modo Claro</option>
-                <option value="dark">🌙 Modo Oscuro</option>
+                <option value="light">☀️ Modo Claro (Vercel Light)</option>
+                <option value="dark">🌙 Modo Oscuro (Linear Obsidian)</option>
               </select>
             </div>
             <div class="form-row">
-              <label for="set-step-reveal">Revelación de Respuestas en Flashcards</label>
+              <label for="set-step-reveal">Revelación de Respuestas en Flashcards 3D</label>
               <select id="set-step-reveal">
-                <option value="false">⚡ Completa en 1 toque (Definición + Analogía + Límites)</option>
-                <option value="true">🪜 Paso a paso (1° Definición → 2° Analogía → 3° Límites)</option>
+                <option value="false">⚡ Giro 3D Completo en 1 toque (Definición + Analogía + Límites)</option>
+                <option value="true">🪜 Giro 3D + Revelación Progresiva (1° Definición → 2° Analogía → 3° Límites)</option>
               </select>
             </div>
             <div class="settings-actions">
@@ -244,7 +341,6 @@
 
     <!-- ============ VISTA 5: Consola de Administración del Sistema ============ -->
     <section id="view-admin" class="view" aria-label="Consola de Administración">
-      <!-- Sub-navegación de consola administrativa -->
       <div class="admin-console-banner">
         <div>
           <h2>🛡️ Consola de Administración y Gobernanza</h2>
@@ -253,7 +349,7 @@
         <span class="badge-neutral" id="admin-count-badge">0 registros</span>
       </div>
 
-      <!-- Tarjeta Admin 1: Curaduría del Catálogo Canónico (Reenviar a la IA o Eliminar) -->
+      <!-- Tarjeta Admin 1: Curaduría del Catálogo Canónico -->
       <div class="settings-card" style="margin-top: 16px;">
         <div class="admin-header">
           <div>
@@ -295,7 +391,7 @@
         <div id="admin-users-list" class="admin-records-list" style="margin-top: 12px;"></div>
       </div>
 
-      <!-- Tarjeta Admin 2: Cola de Propuestas y Arbitraje Canónico -->
+      <!-- Tarjeta Admin 3: Cola de Propuestas y Arbitraje Canónico -->
       <div class="settings-card" id="admin-proposals-section" style="margin-top: 20px;">
         <div class="admin-header">
           <div>
@@ -309,7 +405,7 @@
         <div id="admin-proposals-list" class="admin-records-list" style="margin-top: 12px;"></div>
       </div>
 
-      <!-- Tarjeta Admin 3: Inteligencia de Negocios (BI Centralizado) -->
+      <!-- Tarjeta Admin 4: Inteligencia de Negocios (BI Centralizado) -->
       <div class="settings-card" id="admin-bi-section" style="margin-top: 20px;">
         <div class="admin-header">
           <div>
@@ -325,6 +421,29 @@
       </div>
     </section>
   </div>
+
+  <!-- ============ COMMAND PALETTE (Ctrl + K / Raycast Omnibar) ============ -->
+  <dialog id="dlg-cmd-palette" class="cmd-palette-dialog" aria-label="Paleta de Comandos y Búsqueda Rápida">
+    <div class="cmd-palette-box">
+      <div class="cmd-search-header">
+        <svg class="cmd-search-ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <input type="search" id="cmd-search-input" placeholder="Busca un concepto canónico, categoría, fuente primaria o ejecuta una acción…" autocomplete="off" spellcheck="false">
+        <kbd class="cmd-esc-badge" id="cmd-close-btn">ESC</kbd>
+      </div>
+      <div class="cmd-filter-bar" id="cmd-filter-bar">
+        <button type="button" class="cmd-filter-pill active" data-cmd-filter="all">Todo</button>
+        <button type="button" class="cmd-filter-pill" data-cmd-filter="terms">📘 Términos</button>
+        <button type="button" class="cmd-filter-pill" data-cmd-filter="categories">🌲 Categorías</button>
+        <button type="button" class="cmd-filter-pill" data-cmd-filter="actions">⚡ Acciones</button>
+      </div>
+      <div class="cmd-results-list" id="cmd-results-list" role="listbox"></div>
+      <div class="cmd-footer">
+        <span><kbd>↑</kbd><kbd>↓</kbd> navegar</span>
+        <span><kbd>↵</kbd> seleccionar</span>
+        <span><kbd>ESC</kbd> cerrar</span>
+      </div>
+    </div>
+  </dialog>
 
   <!-- Diálogo: explicación de categoría -->
   <dialog id="dlg-category">
@@ -419,6 +538,6 @@
   </dialog>
 
   <div class="toast" id="toast" hidden></div>
-  <script src="/app.js?v=3.1"></script>
+  <script src="/app.js?v=4.0"></script>
 </body>
 </html>
